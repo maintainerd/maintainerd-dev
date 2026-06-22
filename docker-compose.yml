@@ -57,6 +57,12 @@ services:
       RABBITMQ_DEFAULT_PASS: Pass123
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   # ── Backend ─────────────────────────────────────────────────────────────────
@@ -78,9 +84,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - postgres-db
-      - redis-db
-      - rabbitmq
+      postgres-db:
+        condition: service_healthy
+      redis-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - default
       - signoz-net
