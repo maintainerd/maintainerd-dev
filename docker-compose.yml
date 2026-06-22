@@ -201,4 +201,4 @@ networks:
   default:
     driver: bridge
   signoz-net:
-    name: signoz-net
+    external: true
