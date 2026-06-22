@@ -6,3 +6,6 @@ Thumbs.db
 
 # Node (if any frontend tooling leaks)
 node_modules/
+
+# Generated local HTTPS CA and certificates
+.certs/

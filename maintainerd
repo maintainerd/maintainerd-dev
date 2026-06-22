@@ -9,6 +9,10 @@ HOSTS_ENTRIES=(
   "127.0.0.1 public-api.auth.maintainerd.local"
   "127.0.0.1 console.auth.maintainerd.local"
   "127.0.0.1 identity.auth.maintainerd.local"
+  "127.0.0.1 rabbitmq.auth.maintainerd.local"
+  "127.0.0.1 prometheus.auth.maintainerd.local"
+  "127.0.0.1 grafana.auth.maintainerd.local"
+  "127.0.0.1 signoz.auth.maintainerd.local"
 )
 
 # ── usage ────────────────────────────────────────────────────────────────────
@@ -18,7 +22,7 @@ maintainerd — local development environment manager
 
 Usage:
   ./maintainerd init                    Clone all repositories
-  ./maintainerd setup                   Create .env files and configure /etc/hosts
+  ./maintainerd setup                   Configure env, hosts, and trusted local HTTPS
   ./maintainerd up  --profile=<name>    Start services (use -d for detached)
   ./maintainerd down                    Stop all services
   ./maintainerd clean                   Stop services and remove development data
@@ -28,6 +32,10 @@ Hosts (added to /etc/hosts during setup):
   public-api.auth.maintainerd.local     → Public API (port 8081)
   console.auth.maintainerd.local        → Console app
   identity.auth.maintainerd.local       → Identity app
+  rabbitmq.auth.maintainerd.local       → RabbitMQ management
+  prometheus.auth.maintainerd.local     → Prometheus (observed profile)
+  grafana.auth.maintainerd.local        → Grafana (observed profile)
+  signoz.auth.maintainerd.local         → SigNoz (observed profile)
 
 Profiles:
   auth           Auth services only (no observability)
@@ -70,6 +78,20 @@ copy_env_sample() {
   fi
 }
 
+configure_https_env() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+
+  sed -i \
+    -e 's|http://private-api\.auth\.maintainerd\.local|https://private-api.auth.maintainerd.local|g' \
+    -e 's|http://public-api\.auth\.maintainerd\.local|https://public-api.auth.maintainerd.local|g' \
+    -e 's|http://console\.auth\.maintainerd\.local|https://console.auth.maintainerd.local|g' \
+    -e 's|http://identity\.auth\.maintainerd\.local|https://identity.auth.maintainerd.local|g' \
+    -e 's|^COOKIE_SECURE=false$|COOKIE_SECURE=true|' \
+    -e 's|^WEBAUTHN_RP_ID=localhost$|WEBAUTHN_RP_ID=auth.maintainerd.local|' \
+    "$file"
+}
+
 ensure_hosts_entry() {
   local entry="$1"
   if grep -qF "$entry" /etc/hosts 2>/dev/null; then
@@ -105,6 +127,16 @@ cmd_setup() {
   copy_env_sample "maintainerd-auth"          "maintainerd-auth.env"
   copy_env_sample "maintainerd-auth-console"  "maintainerd-auth-console.env"
   copy_env_sample "maintainerd-auth-identity" "maintainerd-auth-identity.env"
+
+  echo ""
+  echo "==> Configuring HTTPS application origins"
+  configure_https_env "${PARENT_DIR}/maintainerd-auth/.env"
+  configure_https_env "${PARENT_DIR}/maintainerd-auth-console/.env"
+  configure_https_env "${PARENT_DIR}/maintainerd-auth-identity/.env"
+
+  echo ""
+  echo "==> Generating and trusting the local HTTPS certificate"
+  "${SCRIPT_DIR}/scripts/generate-local-certs.sh" --trust
 
   echo ""
   echo "==> Syncing AI/agent config files to each repo"
@@ -160,6 +192,7 @@ cmd_up() {
 
   echo "==> Starting profile: ${profile}"
   cd "$SCRIPT_DIR"
+  "${SCRIPT_DIR}/scripts/generate-local-certs.sh"
   MAINTAINERD_OTEL_ENABLED="$otel_enabled" \
     docker compose --profile "$profile" up "${compose_args[@]}" --remove-orphans
 }

@@ -32,6 +32,10 @@ services:
 
   signoz:
     profiles: ["auth-observed", "all"]
+    ports: !reset []
+    networks:
+      - default
+      - signoz-net
 
   otel-collector:
     profiles: ["auth-observed", "all"]
@@ -87,7 +91,6 @@ services:
     profiles: ["auth", "auth-observed", "all"]
     ports:
       - "5672:5672"
-      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: devuser
       RABBITMQ_DEFAULT_PASS: Pass123
@@ -142,8 +145,10 @@ services:
     profiles: ["auth", "auth-observed", "all"]
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/local.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.certs:/etc/nginx/certs:ro
     networks:
       default:
         aliases:
@@ -151,8 +156,19 @@ services:
           - public-api.auth.maintainerd.local
           - console.auth.maintainerd.local
           - identity.auth.maintainerd.local
+          - rabbitmq.auth.maintainerd.local
+          - prometheus.auth.maintainerd.local
+          - grafana.auth.maintainerd.local
+          - signoz.auth.maintainerd.local
     depends_on:
-      - maintainerd-auth
+      maintainerd-auth:
+        condition: service_started
+      maintainerd-auth-console:
+        condition: service_healthy
+      maintainerd-auth-identity:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Frontends ───────────────────────────────────────────────────────────────
@@ -164,8 +180,6 @@ services:
     image: m9d-console-dev
     container_name: m9d-console-dev
     profiles: ["auth", "auth-observed", "all"]
-    ports:
-      - "5173:3000"
     volumes:
       - ../maintainerd-auth-console:/app
       - console-node-modules:/app/node_modules
@@ -186,8 +200,6 @@ services:
     image: m9d-identity-dev
     container_name: m9d-identity-dev
     profiles: ["auth", "auth-observed", "all"]
-    ports:
-      - "5174:3000"
     volumes:
       - ../maintainerd-auth-identity:/app
       - identity-node-modules:/app/node_modules
@@ -206,8 +218,6 @@ services:
     image: prom/prometheus:latest
     container_name: prometheus
     profiles: ["auth-observed", "all"]
-    ports:
-      - "9090:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -222,12 +232,12 @@ services:
     image: grafana/grafana-oss:latest
     container_name: grafana
     profiles: ["auth-observed", "all"]
-    ports:
-      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SERVER_ROOT_URL=https://grafana.auth.maintainerd.local
     volumes:
       - grafana-data:/var/lib/grafana
     restart: unless-stopped

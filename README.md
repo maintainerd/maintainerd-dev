@@ -8,21 +8,23 @@ Local development environment for the maintainerd platform. One command to clone
 # 1. Clone all repos
 ./maintainerd init
 
-# 2. Create .env files + configure /etc/hosts (may prompt for sudo)
+# 2. Create env files, configure hosts, and trust the local HTTPS CA
+#    (prompts for sudo)
 ./maintainerd setup
 
 # 3. Start auth with observability
 ./maintainerd up --profile=auth-observed -d
 ```
 
-Console:  http://console.auth.maintainerd.local  
-Identity: http://identity.auth.maintainerd.local  
+Console: https://console.auth.maintainerd.local
+
+Identity: https://identity.auth.maintainerd.local
 
 ## Commands
 
 ```
 ./maintainerd init                    Clone all repos
-./maintainerd setup                   Create .env files + configure /etc/hosts
+./maintainerd setup                   Configure env, hosts, and trusted local HTTPS
 ./maintainerd up --profile=auth       Start auth without observability
 ./maintainerd up --profile=auth-observed    Start auth with observability
 ./maintainerd up --profile=auth-observed -d Start observed auth detached
@@ -51,11 +53,24 @@ RabbitMQ, frontend dependencies, Go build caches, and observability data.
 | `public-api.auth.maintainerd.local`  | Public API (nginx → auth:8081) |
 | `console.auth.maintainerd.local`     | Console app (nginx → console:3000) |
 | `identity.auth.maintainerd.local`    | Identity app (nginx → identity:3000) |
+| `rabbitmq.auth.maintainerd.local`    | RabbitMQ management UI |
+| `prometheus.auth.maintainerd.local`  | Prometheus (`auth-observed`) |
+| `grafana.auth.maintainerd.local`     | Grafana (`auth-observed`) |
+| `signoz.auth.maintainerd.local`      | SigNoz (`auth-observed`) |
+
+All browser-facing URLs use HTTPS. `setup` creates a repository-local CA and
+wildcard certificate under `.certs/`, installs the CA into the system trust
+store, and configures the required local hostnames. Plain HTTP requests are
+redirected to HTTPS. Internal Docker traffic remains on private networks using
+each service's native protocol.
+
+Firefox Snap users must fully quit and reopen Firefox after the first `setup`.
+The setup command enables Firefox system-CA trust for every local profile.
 
 ## Architecture
 
 ```
-                    nginx (port 80)
+                nginx (HTTPS port 443)
                    /    |    |    \
     private-api    public-api  console  identity
     → auth:8080   → auth:8081  → :3000  → :3000
