@@ -155,8 +155,9 @@ cmd_up() {
 # ── down ──────────────────────────────────────────────────────────────────────
 cmd_down() {
   cd "$SCRIPT_DIR"
-  docker compose -f docker-compose.yml down --remove-orphans --volumes "$@" 2>/dev/null
+  docker compose -f docker-compose.yml -f deploy/signoz/docker/docker-compose.yaml down --remove-orphans --volumes 2>/dev/null
   docker compose -f deploy/signoz/docker/docker-compose.yaml down --remove-orphans --volumes 2>/dev/null || true
+  docker compose -f docker-compose.yml down --remove-orphans --volumes 2>/dev/null || true
   echo "All services stopped."
 }
 
