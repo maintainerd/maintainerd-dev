@@ -155,7 +155,7 @@ cmd_up() {
 # ── down ──────────────────────────────────────────────────────────────────────
 cmd_down() {
   cd "$SCRIPT_DIR"
-  docker compose down --remove-orphans "$@"
+  docker compose -f docker-compose.yml down --remove-orphans "$@"
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
