@@ -11,6 +11,12 @@
 #   docker compose down
 # =============================================================================
 
+# Pull in SigNoz (OTLP collector, ClickHouse, UI). SigNoz listens on host ports
+# 4317/4318 (gRPC/HTTP); its UI is at http://localhost:8080.
+# Vendored from github.com/SigNoz/signoz (deploy/) at v0.128.0.
+include:
+  - deploy/signoz/docker/docker-compose.yaml
+
 services:
   # ── Infrastructure (shared across profiles) ─────────────────────────────────
 
@@ -72,6 +78,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      - postgres-db
+      - redis-db
+      - rabbitmq
+    networks:
+      - default
+      - signoz-net
       - postgres-db
       - redis-db
       - rabbitmq
@@ -178,3 +190,9 @@ volumes:
   identity-node-modules:
   prometheus-data:
   grafana-data:
+
+networks:
+  default:
+    driver: bridge
+  signoz-net:
+    name: signoz-net
