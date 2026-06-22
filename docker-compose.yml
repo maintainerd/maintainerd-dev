@@ -3,12 +3,13 @@
 # =============================================================================
 # Profiles:
 #   auth    All auth services (backend + frontends + databases + nginx)
-#   all     Everything incl. observability (Prometheus + Grafana + SigNoz)
+#   auth-observed  Auth + observability (Prometheus + Grafana + SigNoz)
+#   all            Everything (currently equivalent to auth-observed)
 #
 # Usage:
-#   docker compose --profile auth up -d
-#   docker compose --profile all  up -d
-#   docker compose down
+#   ./maintainerd up --profile=auth -d
+#   ./maintainerd up --profile=auth-observed -d
+#   ./maintainerd down
 # =============================================================================
 
 # Pull in SigNoz (OTLP collector, ClickHouse, UI). SigNoz listens on host ports
@@ -18,12 +19,35 @@ include:
   - deploy/signoz/docker/docker-compose.yaml
 
 services:
+  # The included SigNoz services are unprofiled upstream. Assign them here so
+  # auth stays lightweight while auth-observed and all remain complete.
+  init-clickhouse:
+    profiles: ["auth-observed", "all"]
+
+  zookeeper-1:
+    profiles: ["auth-observed", "all"]
+
+  clickhouse:
+    profiles: ["auth-observed", "all"]
+
+  signoz:
+    profiles: ["auth-observed", "all"]
+
+  otel-collector:
+    profiles: ["auth-observed", "all"]
+    networks:
+      - default
+      - signoz-net
+
+  signoz-telemetrystore-migrator:
+    profiles: ["auth-observed", "all"]
+
   # ── Infrastructure (shared across profiles) ─────────────────────────────────
 
   postgres-db:
     image: postgres:17
     container_name: postgres-db
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "5433:5432"
     environment:
@@ -32,23 +56,35 @@ services:
       POSTGRES_DB: maintainerd
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "devuser", "-d", "maintainerd"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
 
   redis-db:
     image: redis:7
     container_name: redis-db
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "6379:6379"
     command: ["redis-server", "--requirepass", "Pass123"]
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "Pass123", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -73,7 +109,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-auth-dev
     container_name: m9d-auth-dev
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     volumes:
       - ../maintainerd-auth:/usr/src/app
       - go-mod-cache:/go/pkg/mod
@@ -81,6 +117,10 @@ services:
     environment:
       - ENV=local
       - CGO_ENABLED=0
+      # The launcher enables OTLP only when an observability profile is active.
+      # This avoids reconnect loops in the lightweight auth stack.
+      - OTEL_ENABLED=${MAINTAINERD_OTEL_ENABLED:-false}
+    init: true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -92,7 +132,6 @@ services:
         condition: service_healthy
     networks:
       - default
-      - signoz-net
     restart: unless-stopped
 
   # ── nginx (API gateway) ─────────────────────────────────────────────────────
@@ -100,7 +139,7 @@ services:
   nginx:
     image: nginx:latest
     container_name: nginx-proxy
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "80:80"
     volumes:
@@ -124,7 +163,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-console-dev
     container_name: m9d-console-dev
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "5173:3000"
     volumes:
@@ -132,8 +171,12 @@ services:
       - console-node-modules:/app/node_modules
     environment:
       - NODE_ENV=development
+      # Polling is reliable for bind mounts and avoids host inotify exhaustion.
+      - CHOKIDAR_USEPOLLING=true
+      - CHOKIDAR_INTERVAL=300
     depends_on:
       - maintainerd-auth
+    init: true
     restart: unless-stopped
 
   maintainerd-auth-identity:
@@ -142,7 +185,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-identity-dev
     container_name: m9d-identity-dev
-    profiles: ["auth", "all"]
+    profiles: ["auth", "auth-observed", "all"]
     ports:
       - "5174:3000"
     volumes:
@@ -150,16 +193,19 @@ services:
       - identity-node-modules:/app/node_modules
     environment:
       - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true
+      - CHOKIDAR_INTERVAL=300
     depends_on:
       - maintainerd-auth
+    init: true
     restart: unless-stopped
 
-  # ── Observability (all profile only) ────────────────────────────────────────
+  # ── Observability (auth-observed and all profiles) ──────────────────────────
 
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
-    profiles: ["all"]
+    profiles: ["auth-observed", "all"]
     ports:
       - "9090:9090"
     volumes:
@@ -175,7 +221,7 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana
-    profiles: ["all"]
+    profiles: ["auth-observed", "all"]
     ports:
       - "3001:3000"
     environment:
@@ -201,4 +247,4 @@ networks:
   default:
     driver: bridge
   signoz-net:
-    external: true
+    name: signoz-net

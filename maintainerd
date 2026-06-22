@@ -21,6 +21,7 @@ Usage:
   ./maintainerd setup                   Create .env files and configure /etc/hosts
   ./maintainerd up  --profile=<name>    Start services (use -d for detached)
   ./maintainerd down                    Stop all services
+  ./maintainerd clean                   Stop services and remove development data
 
 Hosts (added to /etc/hosts during setup):
   private-api.auth.maintainerd.local    → Internal API (port 8080)
@@ -29,15 +30,17 @@ Hosts (added to /etc/hosts during setup):
   identity.auth.maintainerd.local       → Identity app
 
 Profiles:
-  auth           All auth services (backend + frontends + databases + nginx)
-  all            Everything incl. observability (Prometheus + Grafana)
+  auth           Auth services only (no observability)
+  auth-observed  Auth services + Prometheus + Grafana + SigNoz
+  all            Everything (currently equivalent to auth-observed)
 
 Examples:
   ./maintainerd init
   ./maintainerd setup
   ./maintainerd up --profile=auth
-  ./maintainerd up --profile=all -d
+  ./maintainerd up --profile=auth-observed -d
   ./maintainerd down
+  ./maintainerd clean
 EOF
   exit 0
 }
@@ -115,20 +118,30 @@ cmd_setup() {
   done
 
   echo ""
-  echo "==> Done. Run './maintainerd up --profile=all' to start everything."
+  echo "==> Done. Run './maintainerd up --profile=auth' to start the auth stack."
 }
 
 # ── up ────────────────────────────────────────────────────────────────────────
 cmd_up() {
   local profile=""
-  local detach=""
-  for arg in "$@"; do
-    case "$arg" in
-      --profile=*) profile="${arg#*=}" ;;
-      --profile) shift; profile="$1" ;;
-      -d) detach="-d" ;;
+  local otel_enabled="false"
+  local -a compose_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --profile requires a value"
+          exit 1
+        fi
+        profile="$2"
+        shift
+        ;;
+      -d) compose_args+=("-d") ;;
       *) usage ;;
     esac
+    shift
   done
 
   if [ -z "$profile" ]; then
@@ -137,23 +150,34 @@ cmd_up() {
   fi
 
   case "$profile" in
-    auth|all) ;;
+    auth) ;;
+    auth-observed|all) otel_enabled="true" ;;
     *)
-      echo "ERROR: unknown profile '${profile}'. Use 'auth' or 'all'."
+      echo "ERROR: unknown profile '${profile}'. Use 'auth', 'auth-observed', or 'all'."
       exit 1
       ;;
   esac
 
   echo "==> Starting profile: ${profile}"
   cd "$SCRIPT_DIR"
-  COMPOSE_PROFILES="${profile}" docker compose up ${detach} --remove-orphans
+  MAINTAINERD_OTEL_ENABLED="$otel_enabled" \
+    docker compose --profile "$profile" up "${compose_args[@]}" --remove-orphans
 }
 
 # ── down ──────────────────────────────────────────────────────────────────────
 cmd_down() {
   cd "$SCRIPT_DIR"
-  docker compose down --remove-orphans --volumes
+  # Activate the superset profile so Compose includes every managed service in
+  # the shutdown model, regardless of which profile was used for `up`.
+  docker compose --profile all down --remove-orphans
   echo "All services stopped."
+}
+
+# ── clean ────────────────────────────────────────────────────────────────────
+cmd_clean() {
+  cd "$SCRIPT_DIR"
+  docker compose --profile all down --remove-orphans --volumes
+  echo "All services stopped and development volumes removed."
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -162,5 +186,6 @@ case "${1:-}" in
   setup)   shift; cmd_setup "$@" ;;
   up)      shift; cmd_up "$@" ;;
   down)    shift; cmd_down "$@" ;;
+  clean)   shift; cmd_clean "$@" ;;
   *)       usage ;;
 esac

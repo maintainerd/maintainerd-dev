@@ -4,6 +4,9 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MAINTAINERD="${ROOT_DIR}/maintainerd"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,10 +39,10 @@ check_docker() {
     fi
 }
 
-# Function to check if docker-compose is available
+# Function to check if Docker Compose v2 is available
 check_docker_compose() {
-    if ! command -v docker-compose > /dev/null 2>&1; then
-        print_error "docker-compose is not installed or not in PATH."
+    if ! docker compose version > /dev/null 2>&1; then
+        print_error "Docker Compose v2 is not available."
         exit 1
     fi
 }
@@ -50,8 +53,7 @@ dev_start() {
     check_docker
     check_docker_compose
     
-    # Build and start services
-    docker-compose up --build -d
+    "$MAINTAINERD" up --profile=auth -d
     
     print_success "Development environment started!"
     print_status "Services running:"
@@ -68,15 +70,15 @@ dev_start() {
 # Function to stop development environment
 dev_stop() {
     print_status "Stopping development environment..."
-    docker-compose down
+    "$MAINTAINERD" down
     print_success "Development environment stopped!"
 }
 
 # Function to restart development environment
 dev_restart() {
     print_status "Restarting development environment..."
-    docker-compose down
-    docker-compose up --build -d
+    "$MAINTAINERD" down
+    "$MAINTAINERD" up --profile=auth -d
     print_success "Development environment restarted!"
 }
 
@@ -84,35 +86,34 @@ dev_restart() {
 dev_logs() {
     if [ -n "$2" ]; then
         print_status "Showing logs for service: $2"
-        docker-compose logs -f "$2"
+        (cd "$ROOT_DIR" && docker compose --profile all logs -f "$2")
     else
         print_status "Showing logs for all services (Ctrl+C to exit)"
-        docker-compose logs -f
+        (cd "$ROOT_DIR" && docker compose --profile all logs -f)
     fi
 }
 
 # Function to rebuild and restart auth service only
 dev_reload() {
     print_status "Rebuilding and restarting auth service..."
-    docker-compose up --build -d auth
+    (cd "$ROOT_DIR" && docker compose --profile auth up --build -d maintainerd-auth)
     print_success "Auth service reloaded!"
 }
 
 # Function to show status
 dev_status() {
     print_status "Development environment status:"
-    docker-compose ps
+    (cd "$ROOT_DIR" && docker compose --profile all ps)
 }
 
 # Function to clean up
 dev_clean() {
-    print_warning "This will remove all containers, images, and volumes!"
+    print_warning "This will remove all containers and development data volumes!"
     read -p "Are you sure? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_status "Cleaning up development environment..."
-        docker-compose down -v --rmi all
-        docker system prune -f
+        "$MAINTAINERD" clean
         print_success "Development environment cleaned!"
     else
         print_status "Clean up cancelled."
@@ -122,7 +123,7 @@ dev_clean() {
 # Function to enter auth container shell
 dev_shell() {
     print_status "Entering auth container shell..."
-    docker-compose exec auth sh
+    (cd "$ROOT_DIR" && docker compose --profile auth exec maintainerd-auth sh)
 }
 
 # Function to show help

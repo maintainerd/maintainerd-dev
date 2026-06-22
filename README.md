@@ -11,8 +11,8 @@ Local development environment for the maintainerd platform. One command to clone
 # 2. Create .env files + configure /etc/hosts (may prompt for sudo)
 ./maintainerd setup
 
-# 3. Start everything
-./maintainerd up --profile=all -d
+# 3. Start auth with observability
+./maintainerd up --profile=auth-observed -d
 ```
 
 Console:  http://console.auth.maintainerd.local  
@@ -23,18 +23,25 @@ Identity: http://identity.auth.maintainerd.local
 ```
 ./maintainerd init                    Clone all repos
 ./maintainerd setup                   Create .env files + configure /etc/hosts
-./maintainerd up --profile=auth       Start backend + databases + nginx
-./maintainerd up --profile=all        Start everything
-./maintainerd up --profile=all -d     Start everything detached
+./maintainerd up --profile=auth       Start auth without observability
+./maintainerd up --profile=auth-observed    Start auth with observability
+./maintainerd up --profile=auth-observed -d Start observed auth detached
+./maintainerd up --profile=all        Start everything (umbrella alias)
 ./maintainerd down                    Stop all services
+./maintainerd clean                   Stop services and remove all development data
 ```
+
+`down` preserves database data and dependency caches for the next start.
+Use `clean` only when you intentionally want to reset PostgreSQL, Redis,
+RabbitMQ, frontend dependencies, Go build caches, and observability data.
 
 ## Profiles
 
 | Profile | Services |
 |---------|----------|
-| `auth`  | auth + console + identity + postgres + redis + rabbitmq + nginx |
-| `all`   | auth + observability (Prometheus, Grafana) |
+| `auth` | auth + console + identity + postgres + redis + rabbitmq + nginx |
+| `auth-observed` | auth + Prometheus + Grafana + SigNoz |
+| `all` | everything; currently equivalent to `auth-observed` |
 
 ## Hosts (added to /etc/hosts during setup)
 
