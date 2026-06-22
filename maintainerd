@@ -136,11 +136,8 @@ cmd_up() {
     usage
   fi
 
-  local compose_files=()
   case "$profile" in
-    auth|all)
-      compose_files+=("-f" "${SCRIPT_DIR}/docker-compose.yml")
-      ;;
+    auth|all) ;;
     *)
       echo "ERROR: unknown profile '${profile}'. Use 'auth' or 'all'."
       exit 1
@@ -149,15 +146,13 @@ cmd_up() {
 
   echo "==> Starting profile: ${profile}"
   cd "$SCRIPT_DIR"
-  COMPOSE_PROFILES="${profile}" docker compose ${compose_files[@]} up ${detach} --remove-orphans
+  COMPOSE_PROFILES="${profile}" docker compose up ${detach} --remove-orphans
 }
 
 # ── down ──────────────────────────────────────────────────────────────────────
 cmd_down() {
   cd "$SCRIPT_DIR"
-  docker compose -f docker-compose.yml -f deploy/signoz/docker/docker-compose.yaml down --remove-orphans --volumes 2>/dev/null
-  docker compose -f deploy/signoz/docker/docker-compose.yaml down --remove-orphans --volumes 2>/dev/null || true
-  docker compose -f docker-compose.yml down --remove-orphans --volumes 2>/dev/null || true
+  docker compose down --remove-orphans --volumes
   echo "All services stopped."
 }
 
