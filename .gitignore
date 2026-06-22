@@ -1,0 +1,8 @@
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+
+# Node (if any frontend tooling leaks)
+node_modules/

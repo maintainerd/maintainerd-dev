@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+
+HOSTS_ENTRIES=(
+  "127.0.0.1 private-api.auth.maintainerd.local"
+  "127.0.0.1 public-api.auth.maintainerd.local"
+  "127.0.0.1 console.auth.maintainerd.local"
+  "127.0.0.1 identity.auth.maintainerd.local"
+)
+
+# ── usage ────────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+maintainerd — local development environment manager
+
+Usage:
+  ./maintainerd init                    Clone all repositories
+  ./maintainerd setup                   Create .env files and configure /etc/hosts
+  ./maintainerd up  --profile=<name>    Start services (use -d for detached)
+  ./maintainerd down                    Stop all services
+
+Hosts (added to /etc/hosts during setup):
+  private-api.auth.maintainerd.local    → Internal API (port 8080)
+  public-api.auth.maintainerd.local     → Public API (port 8081)
+  console.auth.maintainerd.local        → Console app
+  identity.auth.maintainerd.local       → Identity app
+
+Profiles:
+  auth           All auth services (backend + frontends + databases + nginx)
+  all            Everything incl. observability (Prometheus + Grafana)
+
+Examples:
+  ./maintainerd init
+  ./maintainerd setup
+  ./maintainerd up --profile=auth
+  ./maintainerd up --profile=all -d
+  ./maintainerd down
+EOF
+  exit 0
+}
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+clone_repo() {
+  local repo="$1"
+  local dir="${PARENT_DIR}/${repo}"
+  if [ -d "$dir/.git" ]; then
+    echo "  [SKIP] ${repo} already exists — pulling latest"
+    (cd "$dir" && git pull --ff-only 2>/dev/null || true)
+  else
+    echo "  [CLONE] ${repo}"
+    git clone "https://github.com/maintainerd/${repo}.git" "$dir"
+  fi
+}
+
+copy_env_sample() {
+  local repo="$1"
+  local sample="$2"
+  local target="${PARENT_DIR}/${repo}/.env"
+  if [ -f "$target" ]; then
+    echo "  [SKIP] ${repo}/.env already exists"
+  else
+    cp "${SCRIPT_DIR}/.env-samples/${sample}" "$target"
+    echo "  [DONE] ${repo}/.env created from .env-samples/${sample}"
+  fi
+}
+
+ensure_hosts_entry() {
+  local entry="$1"
+  if grep -qF "$entry" /etc/hosts 2>/dev/null; then
+    echo "  [SKIP] /etc/hosts already has: ${entry}"
+  else
+    echo "  [ADD]  /etc/hosts: ${entry}"
+    echo "$entry" | sudo tee -a /etc/hosts > /dev/null
+  fi
+}
+
+# ── init ──────────────────────────────────────────────────────────────────────
+cmd_init() {
+  echo "==> Cloning repositories into ${PARENT_DIR}"
+
+  clone_repo "maintainerd-auth"
+  clone_repo "maintainerd-auth-console"
+  clone_repo "maintainerd-auth-identity"
+
+  echo ""
+  echo "==> Repos cloned. Run './maintainerd setup' to create .env files."
+}
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+cmd_setup() {
+  echo "==> Configuring /etc/hosts"
+  for entry in "${HOSTS_ENTRIES[@]}"; do
+    ensure_hosts_entry "$entry"
+  done
+
+  echo ""
+  echo "==> Creating .env files from samples"
+
+  copy_env_sample "maintainerd-auth"          "maintainerd-auth.env"
+  copy_env_sample "maintainerd-auth-console"  "maintainerd-auth-console.env"
+  copy_env_sample "maintainerd-auth-identity" "maintainerd-auth-identity.env"
+
+  echo ""
+  echo "==> Syncing AI/agent config files to each repo"
+
+  for repo in maintainerd-auth maintainerd-auth-console maintainerd-auth-identity; do
+    target="${PARENT_DIR}/${repo}"
+    if [ -d "$target" ]; then
+      cp -r "${SCRIPT_DIR}/ai-files/." "$target/"
+      echo "  [DONE] ${repo} — AI config synced"
+    fi
+  done
+
+  echo ""
+  echo "==> Done. Run './maintainerd up --profile=all' to start everything."
+}
+
+# ── up ────────────────────────────────────────────────────────────────────────
+cmd_up() {
+  local profile=""
+  local detach=""
+  for arg in "$@"; do
+    case "$arg" in
+      --profile=*) profile="${arg#*=}" ;;
+      --profile) shift; profile="$1" ;;
+      -d) detach="-d" ;;
+      *) usage ;;
+    esac
+  done
+
+  if [ -z "$profile" ]; then
+    echo "ERROR: --profile=<name> is required"
+    usage
+  fi
+
+  local compose_files=()
+  case "$profile" in
+    auth|all)
+      compose_files+=("-f" "${SCRIPT_DIR}/docker-compose.yml")
+      ;;
+    *)
+      echo "ERROR: unknown profile '${profile}'. Use 'auth' or 'all'."
+      exit 1
+      ;;
+  esac
+
+  echo "==> Starting profile: ${profile}"
+  cd "$SCRIPT_DIR"
+  COMPOSE_PROFILES="${profile}" docker compose ${compose_files[@]} up ${detach} --remove-orphans
+}
+
+# ── down ──────────────────────────────────────────────────────────────────────
+cmd_down() {
+  cd "$SCRIPT_DIR"
+  docker compose down --remove-orphans "$@"
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  init)    shift; cmd_init "$@" ;;
+  setup)   shift; cmd_setup "$@" ;;
+  up)      shift; cmd_up "$@" ;;
+  down)    shift; cmd_down "$@" ;;
+  *)       usage ;;
+esac

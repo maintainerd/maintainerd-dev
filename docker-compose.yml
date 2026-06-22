@@ -1,0 +1,180 @@
+# =============================================================================
+# maintainerd — Development Environment
+# =============================================================================
+# Profiles:
+#   auth    All auth services (backend + frontends + databases + nginx)
+#   all     Everything incl. observability (Prometheus + Grafana + SigNoz)
+#
+# Usage:
+#   docker compose --profile auth up -d
+#   docker compose --profile all  up -d
+#   docker compose down
+# =============================================================================
+
+services:
+  # ── Infrastructure (shared across profiles) ─────────────────────────────────
+
+  postgres-db:
+    image: postgres:17
+    container_name: postgres-db
+    profiles: ["auth", "all"]
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: devuser
+      POSTGRES_PASSWORD: Pass123
+      POSTGRES_DB: maintainerd
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis-db:
+    image: redis:7
+    container_name: redis-db
+    profiles: ["auth", "all"]
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--requirepass", "Pass123"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    profiles: ["auth", "all"]
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: devuser
+      RABBITMQ_DEFAULT_PASS: Pass123
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    restart: unless-stopped
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
+
+  auth:
+    build:
+      context: ../maintainerd-auth
+      dockerfile: Dockerfile.local
+    image: m9d-auth-dev
+    container_name: m9d-auth-dev
+    profiles: ["auth", "all"]
+    volumes:
+      - ../maintainerd-auth:/usr/src/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      - ENV=local
+      - CGO_ENABLED=0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres-db
+      - redis-db
+      - rabbitmq
+    restart: unless-stopped
+
+  # ── nginx (API gateway) ─────────────────────────────────────────────────────
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx-proxy
+    profiles: ["auth", "all"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/local.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      default:
+        aliases:
+          - private-api.auth.maintainerd.local
+          - public-api.auth.maintainerd.local
+          - console.auth.maintainerd.local
+          - identity.auth.maintainerd.local
+    depends_on:
+      - auth
+    restart: unless-stopped
+
+  # ── Frontends ───────────────────────────────────────────────────────────────
+
+  console:
+    build:
+      context: ../maintainerd-auth-console
+      dockerfile: Dockerfile.local
+    image: m9d-console-dev
+    container_name: m9d-console-dev
+    profiles: ["auth", "all"]
+    ports:
+      - "5173:3000"
+    volumes:
+      - ../maintainerd-auth-console:/app
+      - console-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - auth
+    restart: unless-stopped
+
+  identity:
+    build:
+      context: ../maintainerd-auth-identity
+      dockerfile: Dockerfile.local
+    image: m9d-identity-dev
+    container_name: m9d-identity-dev
+    profiles: ["auth", "all"]
+    ports:
+      - "5174:3000"
+    volumes:
+      - ../maintainerd-auth-identity:/app
+      - identity-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - auth
+    restart: unless-stopped
+
+  # ── Observability (all profile only) ────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    profiles: ["all"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    profiles: ["all"]
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  go-mod-cache:
+  go-build-cache:
+  console-node-modules:
+  identity-node-modules:
+  prometheus-data:
+  grafana-data:
