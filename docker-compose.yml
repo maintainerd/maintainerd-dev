@@ -84,9 +84,6 @@ services:
     networks:
       - default
       - signoz-net
-      - postgres-db
-      - redis-db
-      - rabbitmq
     restart: unless-stopped
 
   # ── nginx (API gateway) ─────────────────────────────────────────────────────
