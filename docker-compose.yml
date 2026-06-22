@@ -55,7 +55,7 @@ services:
 
   # ── Backend ─────────────────────────────────────────────────────────────────
 
-  auth:
+  maintainerd-auth:
     build:
       context: ../maintainerd-auth
       dockerfile: Dockerfile.local
@@ -95,12 +95,12 @@ services:
           - console.auth.maintainerd.local
           - identity.auth.maintainerd.local
     depends_on:
-      - auth
+      - maintainerd-auth
     restart: unless-stopped
 
   # ── Frontends ───────────────────────────────────────────────────────────────
 
-  console:
+  maintainerd-auth-console:
     build:
       context: ../maintainerd-auth-console
       dockerfile: Dockerfile.local
@@ -115,10 +115,10 @@ services:
     environment:
       - NODE_ENV=development
     depends_on:
-      - auth
+      - maintainerd-auth
     restart: unless-stopped
 
-  identity:
+  maintainerd-auth-identity:
     build:
       context: ../maintainerd-auth-identity
       dockerfile: Dockerfile.local
@@ -133,7 +133,7 @@ services:
     environment:
       - NODE_ENV=development
     depends_on:
-      - auth
+      - maintainerd-auth
     restart: unless-stopped
 
   # ── Observability (all profile only) ────────────────────────────────────────
