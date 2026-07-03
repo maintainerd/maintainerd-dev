@@ -1,5 +1,6 @@
 # =============================================================================
 # maintainerd — Development Environment
+# LOCAL DEVELOPMENT ONLY — not production-hardened.
 # =============================================================================
 # Profiles:
 #   auth    All auth services (backend + frontends + databases + nginx)
