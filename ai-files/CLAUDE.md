@@ -32,11 +32,14 @@ If I reference `maintainerd-auth-console` or `maintainerd-auth-identity`, the co
 
 ## Local dev hosts (via nginx + /etc/hosts)
 
+Tenant-less hosts resolve to the system tenant; regular tenants use `{tenant}.`
+subdomains (`{tenant}.identity.auth.maintainerd.local`, `{tenant}.console.auth.maintainerd.local`).
+
 ```
-127.0.0.1 private-api.auth.maintainerd.local  # → auth:8080
-127.0.0.1 public-api.auth.maintainerd.local   # → auth:8081
-127.0.0.1 console.auth.maintainerd.local      # → console:3000
-127.0.0.1 identity.auth.maintainerd.local     # → identity:3000
+127.0.0.1 identity.auth.maintainerd.local              # → identity:3000  (login UI, system tenant)
+127.0.0.1 console.auth.maintainerd.local      # → console:3000   (auth console, system tenant)
+127.0.0.1 identity-api.auth.maintainerd.local          # → auth:8081      (data plane API)
+127.0.0.1 console-api.auth.maintainerd.local  # → auth:8080      (control plane API)
 ```
 
 ## graphify

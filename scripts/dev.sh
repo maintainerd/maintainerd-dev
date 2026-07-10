@@ -56,11 +56,11 @@ dev_start() {
     "$MAINTAINERD" up --profile=auth -d
     
     print_success "Development environment started!"
-    print_status "Services running:"
-    print_status "  - Console: https://console.auth.maintainerd.local"
+    print_status "Services running (system tenant):"
     print_status "  - Identity: https://identity.auth.maintainerd.local"
-    print_status "  - Internal API: https://private-api.auth.maintainerd.local"
-    print_status "  - Public API: https://public-api.auth.maintainerd.local"
+    print_status "  - Console: https://console.auth.maintainerd.local"
+    print_status "  - Data plane API: https://identity-api.auth.maintainerd.local"
+    print_status "  - Control plane API: https://console-api.auth.maintainerd.local"
     print_status "  - PostgreSQL: localhost:5433"
     print_status "  - Redis: localhost:6379"
     print_status "  - RabbitMQ Management: https://rabbitmq.auth.maintainerd.local"

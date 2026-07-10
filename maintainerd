@@ -4,15 +4,54 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 
-HOSTS_ENTRIES=(
-  "127.0.0.1 private-api.auth.maintainerd.local"
-  "127.0.0.1 public-api.auth.maintainerd.local"
-  "127.0.0.1 console.auth.maintainerd.local"
-  "127.0.0.1 identity.auth.maintainerd.local"
-  "127.0.0.1 rabbitmq.auth.maintainerd.local"
-  "127.0.0.1 prometheus.auth.maintainerd.local"
-  "127.0.0.1 grafana.auth.maintainerd.local"
-  "127.0.0.1 signoz.auth.maintainerd.local"
+# /etc/hosts is managed as a single delimited block so Maintainerd entries stay
+# grouped and never scatter among other projects' entries. The block is removed
+# and rewritten on every setup, so it is always authoritative.
+HOSTS_BEGIN="# >>> Maintainerd Dev (managed by ./maintainerd — do not edit) >>>"
+HOSTS_END="# <<< Maintainerd Dev <<<"
+
+# System-tenant hosts + a fixed set of sample tenants for local multitenant
+# testing (real DNS uses a wildcard; /etc/hosts can't, so we enumerate them).
+# Sample tenants: seguma, acme, wayne-enterprises, stark-industries, umbrella,
+# oscorp — each with an identity and a console subdomain (for multi-QA tenant-
+# isolation testing). To test another tenant, add it here and re-run setup. Note
+# a tenant only SERVES once it is created in the console; the host just resolves.
+MANAGED_HOSTS=(
+  # Identity (login UI)
+  identity.auth.maintainerd.local
+  seguma.identity.auth.maintainerd.local
+  acme.identity.auth.maintainerd.local
+  wayne-enterprises.identity.auth.maintainerd.local
+  stark-industries.identity.auth.maintainerd.local
+  umbrella.identity.auth.maintainerd.local
+  oscorp.identity.auth.maintainerd.local
+  # Console (admin UI)
+  console.auth.maintainerd.local
+  seguma.console.auth.maintainerd.local
+  acme.console.auth.maintainerd.local
+  wayne-enterprises.console.auth.maintainerd.local
+  stark-industries.console.auth.maintainerd.local
+  umbrella.console.auth.maintainerd.local
+  oscorp.console.auth.maintainerd.local
+  # APIs
+  identity-api.auth.maintainerd.local
+  console-api.auth.maintainerd.local
+  # Messaging & Observability
+  rabbitmq.auth.maintainerd.local
+  prometheus.auth.maintainerd.local
+  grafana.auth.maintainerd.local
+  signoz.auth.maintainerd.local
+)
+
+# Hostnames from earlier layouts, removed on setup so no stale lines linger.
+# NOTE: bare `auth.maintainerd.local` was the previous identity host; identity
+# moved to `identity.auth.maintainerd.local`, so the bare host is now stale.
+STALE_HOSTS=(
+  public-api.auth.maintainerd.local
+  private-api.auth.maintainerd.local
+  api.auth.maintainerd.local
+  control-api.auth.maintainerd.local
+  auth.maintainerd.local
 )
 
 # ── usage ────────────────────────────────────────────────────────────────────
@@ -27,15 +66,20 @@ Usage:
   ./maintainerd down                    Stop all services
   ./maintainerd clean                   Stop services and remove development data
 
-Hosts (added to /etc/hosts during setup):
-  private-api.auth.maintainerd.local    → Internal API (port 8080)
-  public-api.auth.maintainerd.local     → Public API (port 8081)
-  console.auth.maintainerd.local        → Console app
-  identity.auth.maintainerd.local       → Identity app
+Hosts (added to /etc/hosts during setup — all resolve to the system tenant):
+  identity.auth.maintainerd.local       → Identity app (login UI)
+  console.auth.maintainerd.local        → Auth console (admin UI)
+  identity-api.auth.maintainerd.local            → Data plane API (port 8081)
+  console-api.auth.maintainerd.local    → Control plane API (port 8080)
   rabbitmq.auth.maintainerd.local       → RabbitMQ management
   prometheus.auth.maintainerd.local     → Prometheus (observed profile)
   grafana.auth.maintainerd.local        → Grafana (observed profile)
   signoz.auth.maintainerd.local         → SigNoz (observed profile)
+
+  Sample tenants (identity + console subdomains, added for local testing):
+    seguma, acme, wayne-enterprises, stark-industries, umbrella, oscorp
+  e.g. seguma.identity.auth.maintainerd.local and seguma.console.auth.maintainerd.local.
+  A tenant serves only once created in the console; the host just resolves.
 
 Profiles:
   auth           Auth services only (no observability)
@@ -66,16 +110,67 @@ clone_repo() {
   fi
 }
 
+# maintainerd-dev is the single source of truth for local env vars, so setup
+# always overwrites each repo's .env from the sample. Any hand-edits to a repo
+# .env are intentionally discarded — put durable local overrides in the sample.
 copy_env_sample() {
   local repo="$1"
   local sample="$2"
   local target="${PARENT_DIR}/${repo}/.env"
   if [ -f "$target" ]; then
-    echo "  [SKIP] ${repo}/.env already exists"
+    echo "  [OVERWRITE] ${repo}/.env from .env-samples/${sample}"
   else
-    cp "${SCRIPT_DIR}/.env-samples/${sample}" "$target"
     echo "  [DONE] ${repo}/.env created from .env-samples/${sample}"
   fi
+  cp "${SCRIPT_DIR}/.env-samples/${sample}" "$target"
+}
+
+# JWT keypair and app secrets are generated once and cached in .secrets/ (which
+# is gitignored). They are reused across setups so tokens and encrypted data
+# stay valid; `./maintainerd clean` wipes the cache for a true reset.
+ensure_secrets() {
+  local secrets_dir="${SCRIPT_DIR}/.secrets"
+  local secrets_env="${secrets_dir}/auth.secrets.env"
+
+  if [ -f "$secrets_env" ]; then
+    echo "  [SKIP] Local secrets already generated (.secrets/auth.secrets.env)"
+    return 0
+  fi
+
+  echo "  [CREATE] Generating local JWT keypair and application secrets"
+  mkdir -p "$secrets_dir"
+  chmod 700 "$secrets_dir"
+
+  # Reuse the JWT helper; it writes jwt_env_vars.txt in ready-to-source .env form.
+  # Invoked via bash because the script is not marked executable in the repo.
+  bash "${SCRIPT_DIR}/scripts/generate-jwt-keys.sh" 4096 "${secrets_dir}/jwt" >/dev/null
+
+  {
+    echo "# ---- Generated secrets (auto-generated by ./maintainerd setup) --------------"
+    cat "${secrets_dir}/jwt/jwt_env_vars.txt"
+    # APP_ENCRYPTION_KEY is used as the raw AES-256 key: the backend requires the
+    # value to be EXACTLY 32 bytes (it is not base64-decoded). `-base64 24`
+    # yields exactly 32 base64 chars (24 bytes → 32 chars, no padding) = 32 bytes.
+    # Do NOT use `-base64 32` (that is 44 chars and fails the 32-byte check).
+    echo "APP_ENCRYPTION_KEY=\"$(openssl rand -base64 24)\""
+    # HMAC key has no fixed-length requirement.
+    echo "HMAC_SECRET_KEY=\"$(openssl rand -base64 32)\""
+  } > "$secrets_env"
+
+  chmod 600 "$secrets_env"
+  echo "  [DONE] Secrets cached in .secrets/ (reused across setups; wiped by clean)"
+}
+
+# Append the cached secret block to a freshly-copied .env.
+inject_secrets() {
+  local repo="$1"
+  local target="${PARENT_DIR}/${repo}/.env"
+  local secrets_env="${SCRIPT_DIR}/.secrets/auth.secrets.env"
+  [ -f "$target" ] || return 0
+  [ -f "$secrets_env" ] || return 0
+  printf '\n' >> "$target"
+  cat "$secrets_env" >> "$target"
+  echo "  [DONE] ${repo}/.env — secrets injected"
 }
 
 configure_https_env() {
@@ -83,8 +178,8 @@ configure_https_env() {
   [ -f "$file" ] || return 0
 
   sed -i \
-    -e 's|http://private-api\.auth\.maintainerd\.local|https://private-api.auth.maintainerd.local|g' \
-    -e 's|http://public-api\.auth\.maintainerd\.local|https://public-api.auth.maintainerd.local|g' \
+    -e 's|http://console-api\.auth\.maintainerd\.local|https://console-api.auth.maintainerd.local|g' \
+    -e 's|http://identity-api\.auth\.maintainerd\.local|https://identity-api.auth.maintainerd.local|g' \
     -e 's|http://console\.auth\.maintainerd\.local|https://console.auth.maintainerd.local|g' \
     -e 's|http://identity\.auth\.maintainerd\.local|https://identity.auth.maintainerd.local|g' \
     -e 's|^COOKIE_SECURE=false$|COOKIE_SECURE=true|' \
@@ -92,14 +187,62 @@ configure_https_env() {
     "$file"
 }
 
-ensure_hosts_entry() {
-  local entry="$1"
-  if grep -qF "$entry" /etc/hosts 2>/dev/null; then
-    echo "  [SKIP] /etc/hosts already has: ${entry}"
+# Emit the managed block content (markers + grouped host lines).
+build_hosts_block() {
+  echo "$HOSTS_BEGIN"
+  echo "# ============================================"
+  echo "# Maintainerd Dev - Host configuration"
+  echo "# ============================================"
+  echo "# Identity (login UI) — system tenant + sample tenants"
+  echo "127.0.0.1 identity.auth.maintainerd.local"
+  echo "127.0.0.1 seguma.identity.auth.maintainerd.local"
+  echo "127.0.0.1 acme.identity.auth.maintainerd.local"
+  echo "127.0.0.1 wayne-enterprises.identity.auth.maintainerd.local"
+  echo "127.0.0.1 stark-industries.identity.auth.maintainerd.local"
+  echo "127.0.0.1 umbrella.identity.auth.maintainerd.local"
+  echo "127.0.0.1 oscorp.identity.auth.maintainerd.local"
+  echo "# Console (admin UI) — system tenant + sample tenants"
+  echo "127.0.0.1 console.auth.maintainerd.local"
+  echo "127.0.0.1 seguma.console.auth.maintainerd.local"
+  echo "127.0.0.1 acme.console.auth.maintainerd.local"
+  echo "127.0.0.1 wayne-enterprises.console.auth.maintainerd.local"
+  echo "127.0.0.1 stark-industries.console.auth.maintainerd.local"
+  echo "127.0.0.1 umbrella.console.auth.maintainerd.local"
+  echo "127.0.0.1 oscorp.console.auth.maintainerd.local"
+  echo "# APIs (tenant resolved from token/client_id, not the host)"
+  echo "127.0.0.1 identity-api.auth.maintainerd.local"
+  echo "127.0.0.1 console-api.auth.maintainerd.local"
+  echo "# Messaging & Observability"
+  echo "127.0.0.1 rabbitmq.auth.maintainerd.local"
+  echo "127.0.0.1 prometheus.auth.maintainerd.local"
+  echo "127.0.0.1 grafana.auth.maintainerd.local"
+  echo "127.0.0.1 signoz.auth.maintainerd.local"
+  echo "$HOSTS_END"
+}
+
+# Rewrite /etc/hosts: drop the old managed block and any loose managed/stale
+# lines, then append a fresh block. Idempotent and duplicate-free.
+configure_hosts_block() {
+  if grep -qF "$HOSTS_BEGIN" /etc/hosts 2>/dev/null; then
+    echo "  [UPDATE] Refreshing the Maintainerd Dev block in /etc/hosts"
   else
-    echo "  [ADD]  /etc/hosts: ${entry}"
-    echo "$entry" | sudo tee -a /etc/hosts > /dev/null
+    echo "  [ADD]    Writing the Maintainerd Dev block to /etc/hosts"
   fi
+
+  # 1) Remove a previous managed block (between the markers, inclusive). The
+  #    markers start with '#', so '|' is used as the sed address delimiter.
+  sudo sed -i "\|^${HOSTS_BEGIN}\$|,\|^${HOSTS_END}\$|d" /etc/hosts
+
+  # 2) Remove loose lines for managed + stale hostnames (from older setups),
+  #    matched only as whole hostnames so manual {tenant}. lines are untouched.
+  local h pat
+  for h in "${MANAGED_HOSTS[@]}" "${STALE_HOSTS[@]}"; do
+    pat="[[:space:]]${h//./\\.}\$"
+    sudo sed -i "/${pat}/d" /etc/hosts
+  done
+
+  # 3) Append the fresh block.
+  build_hosts_block | sudo tee -a /etc/hosts > /dev/null
 }
 
 # ── init ──────────────────────────────────────────────────────────────────────
@@ -117,16 +260,22 @@ cmd_init() {
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   echo "==> Configuring /etc/hosts"
-  for entry in "${HOSTS_ENTRIES[@]}"; do
-    ensure_hosts_entry "$entry"
-  done
+  configure_hosts_block
 
   echo ""
-  echo "==> Creating .env files from samples"
+  echo "==> Ensuring local secrets"
+  ensure_secrets
+
+  echo ""
+  echo "==> Creating .env files from samples (overwrites existing)"
 
   copy_env_sample "maintainerd-auth"          "maintainerd-auth.env"
   copy_env_sample "maintainerd-auth-console"  "maintainerd-auth-console.env"
   copy_env_sample "maintainerd-auth-identity" "maintainerd-auth-identity.env"
+
+  echo ""
+  echo "==> Injecting secrets into maintainerd-auth/.env"
+  inject_secrets "maintainerd-auth"
 
   echo ""
   echo "==> Configuring HTTPS application origins"
@@ -210,6 +359,10 @@ cmd_down() {
 cmd_clean() {
   cd "$SCRIPT_DIR"
   docker compose --profile all down --remove-orphans --volumes
+  if [ -d "${SCRIPT_DIR}/.secrets" ]; then
+    rm -rf "${SCRIPT_DIR}/.secrets"
+    echo "Local secret cache (.secrets/) removed — setup will regenerate keys."
+  fi
   echo "All services stopped and development volumes removed."
 }
 
