@@ -141,9 +141,9 @@ mTLS is enforced. To turn mTLS off for local convenience, set
 
 ```
                      nginx (HTTPS port 443)
-              /        |          |          \
-   control-api        api      console      auth (identity)
-   → auth:8080   → auth:8081   → :3000       → :3000
+              /          |            |          \
+   console-api      identity-api    console      identity
+   → auth:8080      → auth:8081      → :3000      → :3000
 
           maintainerd-auth (Go)
               |
