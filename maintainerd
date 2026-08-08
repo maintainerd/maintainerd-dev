@@ -82,17 +82,24 @@ Hosts (added to /etc/hosts during setup — all resolve to the system tenant):
   A tenant serves only once created in the console; the host just resolves.
 
 Profiles:
-  auth           Auth services only (no observability)
-  auth-observed  Auth services + Prometheus + Grafana + SigNoz
+  auth           DEV — backend + both frontends in hot-reload (no observability)
+  auth-release   RELEASE PARITY — the single all-in-one image (SPAs embedded),
+                 built locally from the release Dockerfile, behind nginx on the
+                 same DBs + URLs. Test the compiled image before tagging.
+  auth-observed  Auth (dev) + Prometheus + Grafana + SigNoz
   all            Everything (currently equivalent to auth-observed)
 
 Examples:
   ./maintainerd init
   ./maintainerd setup
-  ./maintainerd up --profile=auth
+  ./maintainerd up --profile=auth                     # daily development (hot reload)
+  ./maintainerd up --profile=auth-release -d --build  # test the release image locally
   ./maintainerd up --profile=auth-observed -d
   ./maintainerd down
   ./maintainerd clean
+
+The auth and auth-release profiles both listen on :80/:443 and the same
+*.auth.maintainerd.local hosts — run one at a time (./maintainerd down first).
 EOF
   exit 0
 }
@@ -323,6 +330,9 @@ cmd_up() {
         shift
         ;;
       -d) compose_args+=("-d") ;;
+      # Rebuild images before starting — needed to pick up code changes in the
+      # auth-release profile (the compiled image is not hot-reloaded).
+      --build) compose_args+=("--build") ;;
       *) usage ;;
     esac
     shift
@@ -334,10 +344,10 @@ cmd_up() {
   fi
 
   case "$profile" in
-    auth) ;;
+    auth|auth-release) ;;
     auth-observed|all) otel_enabled="true" ;;
     *)
-      echo "ERROR: unknown profile '${profile}'. Use 'auth', 'auth-observed', or 'all'."
+      echo "ERROR: unknown profile '${profile}'. Use 'auth', 'auth-release', 'auth-observed', or 'all'."
       exit 1
       ;;
   esac
@@ -352,16 +362,17 @@ cmd_up() {
 # ── down ──────────────────────────────────────────────────────────────────────
 cmd_down() {
   cd "$SCRIPT_DIR"
-  # Activate the superset profile so Compose includes every managed service in
-  # the shutdown model, regardless of which profile was used for `up`.
-  docker compose --profile all down --remove-orphans
+  # Activate every profile so Compose includes all managed services in the
+  # shutdown model, regardless of which profile was used for `up`. auth-release
+  # is not part of `all`, so it is named explicitly.
+  docker compose --profile all --profile auth-release down --remove-orphans
   echo "All services stopped."
 }
 
 # ── clean ────────────────────────────────────────────────────────────────────
 cmd_clean() {
   cd "$SCRIPT_DIR"
-  docker compose --profile all down --remove-orphans --volumes
+  docker compose --profile all --profile auth-release down --remove-orphans --volumes
   if [ -d "${SCRIPT_DIR}/.secrets" ]; then
     rm -rf "${SCRIPT_DIR}/.secrets"
     echo "Local secret cache (.secrets/) removed — setup will regenerate keys."
