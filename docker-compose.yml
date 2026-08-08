@@ -3,12 +3,19 @@
 # LOCAL DEVELOPMENT ONLY — not production-hardened.
 # =============================================================================
 # Profiles:
-#   auth    All auth services (backend + frontends + databases + nginx)
-#   auth-observed  Auth + observability (Prometheus + Grafana + SigNoz)
+#   auth           DEV: backend + both frontends in hot-reload (Air + vite) +
+#                  databases + nginx. This is what you use while coding.
+#   auth-release   RELEASE PARITY: the SINGLE all-in-one image (backend + both
+#                  SPAs embedded) built locally from maintainerd-auth/Dockerfile,
+#                  behind nginx as the TLS edge, on the same databases + URLs.
+#                  Use it to confirm the compiled image works before tagging a
+#                  release. No hot reload — rebuild to pick up code changes.
+#   auth-observed  Auth (dev) + observability (Prometheus + Grafana + SigNoz)
 #   all            Everything (currently equivalent to auth-observed)
 #
 # Usage:
-#   ./maintainerd up --profile=auth -d
+#   ./maintainerd up --profile=auth -d           # daily development
+#   ./maintainerd up --profile=auth-release -d   # test the release image locally
 #   ./maintainerd up --profile=auth-observed -d
 #   ./maintainerd down
 # =============================================================================
@@ -52,7 +59,7 @@ services:
   postgres-db:
     image: postgres:17
     container_name: postgres-db
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all"]
     ports:
       - "5433:5432"
     environment:
@@ -72,7 +79,7 @@ services:
   redis-db:
     image: redis:7
     container_name: redis-db
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all"]
     ports:
       - "6379:6379"
     command: ["redis-server", "--requirepass", "Pass123"]
@@ -89,7 +96,7 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all"]
     ports:
       - "5672:5672"
     environment:
@@ -110,9 +117,9 @@ services:
   maintainerd-auth:
     # DEV MODE — Go backend with Air hot-reload, source bind-mounted from the
     # consolidated repo. The console + identity SPAs run as their own hot-reload
-    # vite dev servers below (from web/console, web/identity). For the single
-    # compiled all-in-one image instead, see maintainerd-auth/Dockerfile (that's
-    # what ships on release; run it via maintainerd-auth/docker-compose.yml).
+    # vite dev servers below (from web/console, web/identity). To instead run the
+    # single compiled all-in-one image (backend + both SPAs embedded), use the
+    # `auth-release` profile — see the maintainerd-auth-release service below.
     build:
       context: ../maintainerd-auth
       dockerfile: Dockerfile.local
@@ -224,6 +231,75 @@ services:
     depends_on:
       - maintainerd-auth
     init: true
+    restart: unless-stopped
+
+  # ── Release parity (auth-release profile) ────────────────────────────────────
+  # The SINGLE all-in-one image, built locally from the SAME Dockerfile that
+  # ships on release (SPAs embedded via go:embed). No source bind mount and no
+  # hot reload: it is the compiled artifact. Rebuild to pick up code changes:
+  #   ./maintainerd up --profile=auth-release -d --build
+  maintainerd-auth-release:
+    build:
+      context: ../maintainerd-auth
+      dockerfile: Dockerfile
+      args:
+        VERSION: local-release
+    image: m9d-auth-release
+    container_name: m9d-auth-release
+    profiles: ["auth-release"]
+    ports:
+      # gRPC (mTLS) for host tooling such as grpcurl, matching the dev backend.
+      - "50051:50051"
+    volumes:
+      # The image reads its config via godotenv from /.env at startup — the same
+      # .env `./maintainerd setup` generates for dev (real newlines for the JWT
+      # PEM, which env_file cannot preserve). Read-only; the image never writes it.
+      - ../maintainerd-auth/.env:/.env:ro
+      # gRPC mTLS material (server cert/key + client CA), same as the dev backend.
+      - ./.certs/grpc:/etc/maintainerd/grpc-certs:ro
+    environment:
+      # Enable OTLP only when an observability profile is active (off here).
+      - OTEL_ENABLED=${MAINTAINERD_OTEL_ENABLED:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      redis-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - default
+    restart: unless-stopped
+
+  # TLS edge for the release image. Same certs + hostnames as the dev `nginx`
+  # service, but points every host at the single release container (see
+  # nginx/local-release.conf). Runs only in auth-release, so it never contends
+  # with the dev `nginx` for :80/:443.
+  nginx-release:
+    image: nginx:latest
+    container_name: nginx-release
+    profiles: ["auth-release"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/local-release.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.certs:/etc/nginx/certs:ro
+    networks:
+      default:
+        aliases:
+          - console-api.auth.maintainerd.local
+          - identity-api.auth.maintainerd.local
+          - console.auth.maintainerd.local
+          - identity.auth.maintainerd.local
+          - rabbitmq.auth.maintainerd.local
+    depends_on:
+      maintainerd-auth-release:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Observability (auth-observed and all profiles) ──────────────────────────
