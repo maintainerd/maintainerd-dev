@@ -94,7 +94,11 @@ if [ ! -s "$GRPC_SERVER_KEY" ] || [ ! -s "$GRPC_SERVER_CERT" ] || \
    ! openssl x509 -checkend 2592000 -noout -in "$GRPC_SERVER_CERT" >/dev/null 2>&1; then
   echo "  [CREATE] gRPC mTLS server + client certificates"
   mkdir -p "$GRPC_DIR"
-  chmod 700 "$GRPC_DIR"
+  # 755, not 700: the all-in-one RELEASE image runs as a non-root user (uid
+  # 65532) and mounts this dir read-only. A 700 dir owned by the host user blocks
+  # that uid from even traversing it, so the container fails to read ca.crt /
+  # server.* and crash-loops. The dev backend runs as root and never hit this.
+  chmod 755 "$GRPC_DIR"
 
   # Self-contained trust root inside the mounted dir (GRPC_CLIENT_CA_FILE).
   cp "$CA_CERT" "$GRPC_CA_CERT"
@@ -106,7 +110,7 @@ if [ ! -s "$GRPC_SERVER_KEY" ] || [ ! -s "$GRPC_SERVER_CERT" ] || \
     -keyout "$GRPC_SERVER_KEY" \
     -out "$GRPC_SERVER_CSR" \
     -subj "/CN=maintainerd-auth-grpc" \
-    -addext "subjectAltName=DNS:localhost,DNS:maintainerd-auth,DNS:m9d-auth-dev,IP:127.0.0.1" \
+    -addext "subjectAltName=DNS:localhost,DNS:maintainerd-auth,DNS:maintainerd-auth-release,DNS:m9d-auth-dev,IP:127.0.0.1" \
     -addext "extendedKeyUsage=serverAuth"
   openssl x509 -req -sha256 -days 825 \
     -in "$GRPC_SERVER_CSR" \
@@ -127,7 +131,12 @@ if [ ! -s "$GRPC_SERVER_KEY" ] || [ ! -s "$GRPC_SERVER_CERT" ] || \
     -out "$GRPC_CLIENT_CERT"
 
   rm -f "$GRPC_SERVER_CSR" "$GRPC_CLIENT_CSR"
-  chmod 600 "$GRPC_SERVER_KEY" "$GRPC_CLIENT_KEY"
+  # server.key is read by the auth container (GRPC_TLS_KEY_FILE), which in the
+  # release image is non-root — so it must be world-readable (644). client.key is
+  # only ever used by host tooling (grpcurl), so it stays owner-only (600). This
+  # is a throwaway local CA, so a readable server key on your own machine is fine.
+  chmod 644 "$GRPC_SERVER_KEY"
+  chmod 600 "$GRPC_CLIENT_KEY"
   chmod 644 "$GRPC_CA_CERT" "$GRPC_SERVER_CERT" "$GRPC_CLIENT_CERT"
 fi
 
