@@ -1,18 +1,23 @@
 # maintainerd-dev
 
-Local development environment for the maintainerd platform. One command to clone all repos, set up configuration, and start everything.
+Local development environment for the maintainerd platform. One command to clone the repo, set up configuration, and start everything.
+
+Auth is now a **single repo** (`maintainerd-auth`) containing the Go backend and
+both SPAs (`web/console`, `web/identity`). In dev you run the three as hot-reload
+containers (`auth` profile); to test the compiled single all-in-one image the way
+it ships, use the `auth-release` profile.
 
 ## Quick start
 
 ```bash
-# 1. Clone all repos
+# 1. Clone the maintainerd-auth repo
 ./maintainerd init
 
-# 2. Create env files, configure hosts, and trust the local HTTPS CA
+# 2. Create the env file, configure hosts, and trust the local HTTPS CA
 #    (prompts for sudo)
 ./maintainerd setup
 
-# 3. Start auth with observability
+# 3. Start auth (hot-reload) with observability
 ./maintainerd up --profile=auth-observed -d
 ```
 
@@ -26,40 +31,74 @@ Console: https://console.auth.maintainerd.local
 ## Commands
 
 ```
-./maintainerd init                    Clone all repos
-./maintainerd setup                   Configure env, hosts, and trusted local HTTPS
-./maintainerd up --profile=auth       Start auth without observability
-./maintainerd up --profile=auth-observed    Start auth with observability
-./maintainerd up --profile=auth-observed -d Start observed auth detached
-./maintainerd up --profile=all        Start everything (umbrella alias)
-./maintainerd down                    Stop all services
-./maintainerd clean                   Stop services and remove all development data
+./maintainerd init                                Clone the maintainerd-auth repo
+./maintainerd setup                               Configure env, hosts, and trusted local HTTPS
+./maintainerd up --profile=auth                   Dev: 3 apps in hot-reload (no observability)
+./maintainerd up --profile=auth-release --build   Release parity: the compiled all-in-one image
+./maintainerd up --profile=auth-observed -d       Dev auth + observability, detached
+./maintainerd up --profile=all                    Start everything (umbrella alias)
+./maintainerd down                                Stop all services
+./maintainerd clean                               Stop services and remove all development data
 ```
+
+`auth` and `auth-release` both bind `:80/:443` and the same `*.auth.maintainerd.local`
+hosts, so run **one at a time** (`./maintainerd down` before switching). The
+`auth-release` image is compiled, not hot-reloaded — re-run with `--build` to pick
+up code changes.
 
 `down` preserves database data and dependency caches for the next start.
 Use `clean` only when you intentionally want to reset PostgreSQL, Redis,
 RabbitMQ, frontend dependencies, Go build caches, observability data, and the
 local secret cache (`.secrets/`).
 
-### `setup` owns your `.env` files
+### `setup` owns your `.env` (one consolidated file)
 
-maintainerd-dev is the **single source of truth** for local environment
-variables. Every `setup` run **overwrites** each repo's `.env` from
-`.env-samples/` — so hand-edits to a repo `.env` are discarded. Put durable
-local changes in the sample, not the generated file.
+There is exactly **one** env file now: `.env-samples/maintainerd-auth.env`, which
+`setup` writes to `maintainerd-auth/.env`. Because the console and identity SPAs
+live in the same repo and image, there are **no separate frontend `.env` files** —
+the frontends call their APIs **same-origin** (`/api/v1`, `/public-api/api/v1`), and
+the one cross-app link (console → identity UI) is derived from the backend's
+`APP_FRONTEND_IDENTITY_HOSTNAME`. So every variable is defined **once**, in the
+backend env; there are no duplicated frontend copies to keep in sync.
 
-Secrets are the exception: the JWT keypair, `APP_ENCRYPTION_KEY`, and
-`HMAC_SECRET_KEY` are generated once, cached in `.secrets/` (gitignored), and
-appended to `maintainerd-auth/.env` on every setup. They persist across setups
-so tokens and encrypted data stay valid, and are wiped only by `clean`.
+The **same** `.env` drives both runtime profiles:
+
+- `auth` — bind-mounted into the hot-reload backend; the app reads it via godotenv.
+- `auth-release` — bind-mounted at `/.env` into the compiled image, read the same
+  way (so the `\n`-escaped JWT PEM is parsed with real newlines, which a compose
+  `env_file` cannot preserve).
+
+A few variables are **not** in the sample on purpose, to avoid duplicates:
+
+- `OTEL_ENABLED` — owned by the launcher and injected per profile via
+  `MAINTAINERD_OTEL_ENABLED` in docker-compose (on for `auth-observed`/`all`, off
+  otherwise). Dev-only container settings (`ENV`, `CGO_ENABLED`, vite `NODE_ENV`/
+  `CHOKIDAR_*`) likewise live in compose, not the app env.
+
+maintainerd-dev is the **single source of truth** for these variables. Every
+`setup` run **overwrites** `maintainerd-auth/.env` from the sample — so hand-edits
+to the generated `.env` are discarded. Put durable local changes in the sample.
+
+Secrets are the exception: the JWT keypair, `APP_ENCRYPTION_KEY`,
+`HMAC_SECRET_KEY`, and `SETUP_BOOTSTRAP_TOKEN` are generated once, cached in
+`.secrets/` (gitignored), and appended to `maintainerd-auth/.env` on every setup
+(the overwrite-then-append order means they never accumulate duplicates). They
+persist across setups so tokens and encrypted data stay valid, and are wiped only
+by `clean`.
 
 ## Profiles
 
-| Profile | Services |
-|---------|----------|
-| `auth` | auth + console + identity + postgres + redis + rabbitmq + nginx |
-| `auth-observed` | auth + Prometheus + Grafana + SigNoz |
-| `all` | everything; currently equivalent to `auth-observed` |
+| Profile | Services | Mode |
+|---------|----------|------|
+| `auth` | backend + console + identity + postgres + redis + rabbitmq + nginx | Dev — 3 apps, hot reload |
+| `auth-release` | single all-in-one image + postgres + redis + rabbitmq + nginx | Release parity — compiled image |
+| `auth-observed` | `auth` + Prometheus + Grafana + SigNoz | Dev + observability |
+| `all` | everything; currently equivalent to `auth-observed` | Dev + observability |
+
+`auth-release` builds `maintainerd-auth/Dockerfile` (the exact image that ships on
+release, both SPAs embedded via `go:embed`) and runs it behind nginx as the TLS
+edge — the production topology — on the same databases, `.env`, and URLs as dev.
+Use it to confirm the compiled image works before tagging a release.
 
 ## URL scheme
 
@@ -139,26 +178,42 @@ mTLS is enforced. To turn mTLS off for local convenience, set
 
 ## Architecture
 
+**`auth` (dev)** — nginx fronts three hot-reload containers:
+
 ```
-                     nginx (HTTPS port 443)
+                     nginx (HTTPS 443)
               /          |            |          \
    console-api      identity-api    console      identity
-   → auth:8080      → auth:8081      → :3000      → :3000
+   → auth:8080      → auth:8081     → console:3000  → identity:3000
 
-          maintainerd-auth (Go)
+          maintainerd-auth (Go, Air hot-reload)   console / identity (vite)
               |
     ┌─────────┼─────────┐
     |         |         |
   postgres  redis   rabbitmq
+```
 
-  console (React)  → console-api.auth.maintainerd.local   (control plane)
-  identity (React) → identity-api.auth.maintainerd.local           (data plane)
+**`auth-release`** — nginx fronts one compiled image that serves both SPAs and
+routes their APIs same-origin internally (what ships on release):
+
+```
+                     nginx (HTTPS 443, TLS edge)
+              /          |            |          \
+   console-api      identity-api    console      identity
+   → :8080          → :8081         → :3000      → :3001
+              \          |            |          /
+              maintainerd-auth-release (single image)
+                          |
+              ┌───────────┼───────────┐
+            postgres    redis     rabbitmq
 ```
 
 ## Repositories managed
 
 | Repo | Purpose |
 |------|---------|
-| `maintainerd-auth` | Go backend (dual-port: 8080 internal, 8081 public) |
-| `maintainerd-auth-console` | Internal admin dashboard (React + Vite) |
-| `maintainerd-auth-identity` | Public hosted login UI (React + Vite) |
+| `maintainerd-auth` | The whole auth product: Go backend (`:8080` control, `:8081` data) plus both SPAs under `web/console` and `web/identity`, shipped as one all-in-one image |
+
+> The former `maintainerd-auth-console` and `maintainerd-auth-identity` repos were
+> consolidated into `maintainerd-auth/web/` — their full history is preserved on the
+> `archive/frontends-full-history` tag in that repo.
