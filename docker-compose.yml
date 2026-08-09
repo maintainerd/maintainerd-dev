@@ -144,6 +144,12 @@ services:
       - CGO_ENABLED=0
       # The launcher enables OTLP only when an observability profile is active.
       - OTEL_ENABLED=${MAINTAINERD_OTEL_ENABLED:-false}
+      # Empty on purpose: with the gRPC control plane ON, a set bootstrap token
+      # would flip the instance to "orchestrator-managed" and 403 the REST setup
+      # wizard. There is no orchestrator (CORE) locally, so the console REST
+      # wizard IS the bootstrap path — overriding the token to empty (godotenv
+      # won't clobber a set env var) keeps gRPC runtime on while re-enabling it.
+      - SETUP_BOOTSTRAP_TOKEN=
     init: true
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -260,6 +266,10 @@ services:
     environment:
       # Enable OTLP only when an observability profile is active (off here).
       - OTEL_ENABLED=${MAINTAINERD_OTEL_ENABLED:-false}
+      # Empty on purpose — same reason as the dev backend above: no orchestrator
+      # locally, so the console REST setup wizard is the bootstrap path. A set
+      # token would 403 it ("Setup is orchestrator-managed").
+      - SETUP_BOOTSTRAP_TOKEN=
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
