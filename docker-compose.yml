@@ -148,6 +148,10 @@ services:
     environment:
       - ENV=local
       - CGO_ENABLED=0
+      # Air rebuilds in-container; let Go fetch the toolchain auth's go.mod pins
+      # (the dev base image ships an older patch, and GOTOOLCHAIN=local would make
+      # the build fail — which silently leaves the whole auth backend down).
+      - GOTOOLCHAIN=auto
       # The launcher enables OTLP only when an observability profile is active.
       - OTEL_ENABLED=${MAINTAINERD_OTEL_ENABLED:-false}
       # Setup bootstrap: EMPTY under the auth-only profiles so the console REST
