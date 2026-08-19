@@ -261,9 +261,10 @@ cmd_init() {
   # all-observed profiles. The Docker build uses the parent dir as its context so
   # these siblings must be present for the per-module replace directives to resolve.
   clone_repo "maintainerd"        # core control plane
-  clone_repo "maintainerd-sdk"    # client SDK + kit (agent/secret build against it)
-  clone_repo "maintainerd-secret" # standalone secret store
-  clone_repo "maintainerd-agent"  # executor
+  clone_repo "maintainerd-sdk"    # public client SDK (call maintainerd)
+  clone_repo "maintainerd-kit"    # internal framework + control plane (build/operate)
+  clone_repo "maintainerd-secret" # standalone secret store (builds on the kit)
+  clone_repo "maintainerd-agent"  # executor (builds on the sdk)
   clone_repo "maintainerd-docker" # runtime driver
 
   echo ""
