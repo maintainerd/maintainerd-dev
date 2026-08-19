@@ -11,12 +11,17 @@
 #                  Use it to confirm the compiled image works before tagging a
 #                  release. No hot reload — rebuild to pick up code changes.
 #   auth-observed  Auth (dev) + observability (Prometheus + Grafana + SigNoz)
-#   all            Everything (currently equivalent to auth-observed)
+#   maintainerd    The maintainerd core stack (Core + Agent + Docker + Secret), no auth
+#   all            Everything EXCEPT observability (auth + maintainerd core stack)
+#   all-observed   Everything INCLUDING observability (all + Prometheus/Grafana/SigNoz)
 #
 # Usage:
 #   ./maintainerd up --profile=auth -d           # daily development
 #   ./maintainerd up --profile=auth-release -d   # test the release image locally
 #   ./maintainerd up --profile=auth-observed -d
+#   ./maintainerd up --profile=maintainerd -d    # core stack only
+#   ./maintainerd up --profile=all -d            # auth + core, no observability
+#   ./maintainerd up --profile=all-observed -d   # everything + observability
 #   ./maintainerd down
 # =============================================================================
 
@@ -28,38 +33,39 @@ include:
 
 services:
   # The included SigNoz services are unprofiled upstream. Assign them here so
-  # auth stays lightweight while auth-observed and all remain complete.
+  # they only start under the observability profiles (auth-observed, all-observed)
+  # — the plain `auth` and `all` profiles stay observability-free.
   init-clickhouse:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
 
   zookeeper-1:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
 
   clickhouse:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
 
   signoz:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
     ports: !reset []
     networks:
       - default
       - signoz-net
 
   otel-collector:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
     networks:
       - default
       - signoz-net
 
   signoz-telemetrystore-migrator:
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
 
   # ── Infrastructure (shared across profiles) ─────────────────────────────────
 
   postgres-db:
     image: postgres:17
     container_name: postgres-db
-    profiles: ["auth", "auth-release", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all", "all-observed"]
     ports:
       - "5433:5432"
     environment:
@@ -79,7 +85,7 @@ services:
   redis-db:
     image: redis:7
     container_name: redis-db
-    profiles: ["auth", "auth-release", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all", "all-observed"]
     ports:
       - "6379:6379"
     command: ["redis-server", "--requirepass", "Pass123"]
@@ -96,7 +102,7 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
-    profiles: ["auth", "auth-release", "auth-observed", "all"]
+    profiles: ["auth", "auth-release", "auth-observed", "all", "all-observed"]
     ports:
       - "5672:5672"
     environment:
@@ -125,7 +131,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-auth-dev
     container_name: m9d-auth-dev
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-observed", "all", "all-observed"]
     # gRPC (mTLS) is exposed for host tooling such as grpcurl. HTTP APIs stay
     # behind nginx; only the gRPC port is published directly.
     ports:
@@ -169,7 +175,7 @@ services:
   nginx:
     image: nginx:latest
     container_name: nginx-proxy
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-observed", "all", "all-observed"]
     ports:
       - "80:80"
       - "443:443"
@@ -206,7 +212,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-console-dev
     container_name: m9d-console-dev
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-observed", "all", "all-observed"]
     volumes:
       - ../maintainerd-auth/web/console:/app
       - console-node-modules:/app/node_modules
@@ -226,7 +232,7 @@ services:
       dockerfile: Dockerfile.local
     image: m9d-identity-dev
     container_name: m9d-identity-dev
-    profiles: ["auth", "auth-observed", "all"]
+    profiles: ["auth", "auth-observed", "all", "all-observed"]
     volumes:
       - ../maintainerd-auth/web/identity:/app
       - identity-node-modules:/app/node_modules
@@ -317,7 +323,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -331,7 +337,7 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana
-    profiles: ["auth-observed", "all"]
+    profiles: ["auth-observed", "all-observed"]
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -340,6 +346,109 @@ services:
       - GF_SERVER_ROOT_URL=https://grafana.auth.maintainerd.local
     volumes:
       - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  # ===========================================================================
+  # maintainerd core stack — Core + Agent + Docker + Secret + Postgres.
+  # Profiles: `maintainerd` (just this stack) and `all` (everything).
+  #   ./maintainerd up --profile=maintainerd -d
+  # Built from the parent context via build/Dockerfile (+ build/Dockerfile.dockerignore).
+  # Core publishes 9080 (REST) / 9081 (gRPC) — 8080 is taken by SigNoz.
+  # ===========================================================================
+  m9d-core-db:
+    image: postgres:16-alpine
+    profiles: ["maintainerd", "all", "all-observed"]
+    environment:
+      POSTGRES_USER: core
+      POSTGRES_PASSWORD: corepass
+      POSTGRES_DB: core
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U core -d core"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  m9d-secret:
+    build:
+      context: ..
+      dockerfile: maintainerd-dev/build/Dockerfile
+      args:
+        SERVICE: maintainerd-secret
+        CMD_PATH: cmd/secretd
+    profiles: ["maintainerd", "all", "all-observed"]
+    environment:
+      APP_ENV: development
+      SECRET_ROOT_KEY: "0123456789abcdef0123456789abcdef"
+      SETUP_BOOTSTRAP_TOKEN: devtoken
+      GRPC_PORT: "9092"
+      HTTP_PORT: "8092"
+    restart: unless-stopped
+
+  m9d-docker:
+    build:
+      context: ..
+      dockerfile: maintainerd-dev/build/Dockerfile
+      args:
+        SERVICE: maintainerd-docker
+        CMD_PATH: cmd/dockerd
+    profiles: ["maintainerd", "all", "all-observed"]
+    # Runs as root to read the mounted host Docker socket (dev convenience).
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      APP_ENV: development
+      GRPC_PORT: "9090"
+      HTTP_PORT: "8090"
+    restart: unless-stopped
+
+  m9d-core:
+    build:
+      context: ..
+      dockerfile: maintainerd-dev/build/Dockerfile
+      args:
+        SERVICE: maintainerd
+        CMD_PATH: cmd/server
+    profiles: ["maintainerd", "all", "all-observed"]
+    depends_on:
+      m9d-core-db:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      DB_HOST: m9d-core-db
+      DB_PORT: "5432"
+      DB_USER: core
+      DB_PASSWORD: corepass
+      DB_NAME: core
+      DB_SSLMODE: disable
+      APP_PUBLIC_HOSTNAME: http://localhost
+      APP_PRIVATE_HOSTNAME: http://localhost
+      HTTP_PORT: "8080"
+      GRPC_PORT: "8081"
+    ports:
+      - "9080:8080"
+      - "9081:8081"
+    restart: unless-stopped
+
+  m9d-agent:
+    build:
+      context: ..
+      dockerfile: maintainerd-dev/build/Dockerfile
+      args:
+        SERVICE: maintainerd-agent
+        CMD_PATH: cmd/agentd
+    profiles: ["maintainerd", "all", "all-observed"]
+    depends_on:
+      - m9d-core
+      - m9d-docker
+    environment:
+      APP_ENV: development
+      RUNTIME_ADDR: "m9d-docker:9090"
+      CORE_ADDR: "m9d-core:8081"
+      AGENT_NAME: agent-1
+      GRPC_PORT: "9091"
+      HTTP_PORT: "8091"
     restart: unless-stopped
 
 volumes:

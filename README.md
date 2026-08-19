@@ -7,11 +7,12 @@ both SPAs (`web/console`, `web/identity`). In dev you run the three as hot-reloa
 containers (`auth` profile); to test the compiled single all-in-one image the way
 it ships, use the `auth-release` profile.
 
-> **Two stacks live in this repo.** The **maintainerd core stack**
-> (`docker-compose.maintainerd.yml`, the `all` profile — documented right below)
-> and the **auth stack** (`docker-compose.yml`, the `auth*` profiles — documented
-> under *Auth stack* further down). They are separate compose files; run whichever
-> you need.
+> **One compose file, selected by profile.** The **maintainerd core stack** and
+> the **auth stack** both live in `docker-compose.yml`; you pick a slice with
+> `--profile`. The core stack runs under `maintainerd` (core only), `all` (auth +
+> core, no observability), or `all-observed` (everything + Prometheus/Grafana/SigNoz).
+> The `auth*` profiles are documented under *Auth stack* further down. Always drive
+> it through the `./maintainerd` launcher — never a raw `docker compose`.
 
 # maintainerd core stack
 
@@ -21,21 +22,26 @@ command. Use this to confirm the whole platform runs and the control loop turns.
 ## Run everything
 
 ```bash
-docker compose -f docker-compose.maintainerd.yml --profile all up --build
+# core stack only (Core + Agent + Docker + Secret + its Postgres)
+./maintainerd up --profile=maintainerd -d --build
+
+# auth + core together, no observability
+./maintainerd up --profile=all -d --build
+
+# everything, including observability (Prometheus + Grafana + SigNoz)
+./maintainerd up --profile=all-observed -d --build
 ```
 
-First run builds all four service images from source (a few minutes); later runs
-reuse the cache. Tear it down (also drops Core's DB volume) with:
-
-```bash
-docker compose -f docker-compose.maintainerd.yml --profile all down -v
-```
+First run builds the service images from source (a few minutes); later runs reuse
+the cache. Tear it down with `./maintainerd down` (or `./maintainerd clean` to also
+drop volumes). Observability lives only under the `-observed` profiles — `maintainerd`
+and `all` stay observability-free.
 
 ## What runs
 
 | Service | Built from | Host ports | Role |
 |---------|-----------|-----------|------|
-| `m9d-core` | `maintainerd` | `8080` REST · `8081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
+| `m9d-core` | `maintainerd` | `9080` REST · `9081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
 | `m9d-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
 | `m9d-docker` | `maintainerd-docker` | — | runtime — drives the host Docker Engine (socket mounted; runs as root) |
 | `m9d-secret` | `maintainerd-secret` | — | standalone encrypted secret store (`secret.v1`) |
@@ -48,11 +54,11 @@ on the **host** Docker engine, because `m9d-docker` drives the mounted host sock
 ## Verify the loop end-to-end
 
 ```bash
-docker compose -f docker-compose.maintainerd.yml --profile all ps   # all 5 up
-curl localhost:8080/healthz                                         # {"status":"ok"}
+docker compose --profile maintainerd ps   # all 5 up
+curl localhost:9080/healthz               # {"status":"ok"}
 
 # create a resource; Core -> Agent -> Docker will run it, then report back
-B=http://localhost:8080/api/v1
+B=http://localhost:9080/api/v1
 TEN=$(curl -s -XPOST $B/tenants  -d '{"name":"system","is_system":true}'          | jq -r .data.tenant_uuid)
 PRJ=$(curl -s -XPOST $B/projects -d "{\"tenant_uuid\":\"$TEN\",\"name\":\"default\"}" | jq -r .data.project_uuid)
 RES=$(curl -s -XPOST $B/resources -d "{\"project_uuid\":\"$PRJ\",\"kind\":\"container\",\"name\":\"web\",\"spec\":{\"image\":\"nginx:alpine\",\"name\":\"m9d-web\"}}" | jq -r .data.resource_uuid)
@@ -81,7 +87,7 @@ modules pin.
 > — it unified dependency versions across modules and broke Core's OpenTelemetry
 > setup. The per-module `replace` directives are the mechanism.
 
-## Config (env, set in `docker-compose.maintainerd.yml`)
+## Config (env, set in `docker-compose.yml`)
 
 | Var | Service | Purpose |
 |-----|---------|---------|
@@ -100,8 +106,10 @@ modules pin.
 - **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
   and system-Auth enforcement are not wired yet.
 - **`m9d-docker` runs as root** to read the mounted host socket (dev convenience).
-- **Auth is not in this stack yet** — Core/Agent/Docker/Secret only. Running Auth
-  as a Core-controlled system service is the next integration.
+- **Auth co-runs but isn't wired to Core yet** — the `all`/`all-observed` profiles
+  start Auth alongside the core stack, but Core does not yet provision or govern it.
+  Running Auth as a Core-controlled system service (system-Auth / IAM) is the next
+  integration.
 
 ---
 
@@ -136,7 +144,9 @@ Console: https://console.auth.maintainerd.local
 ./maintainerd up --profile=auth                   Dev: 3 apps in hot-reload (no observability)
 ./maintainerd up --profile=auth-release --build   Release parity: the compiled all-in-one image
 ./maintainerd up --profile=auth-observed -d       Dev auth + observability, detached
-./maintainerd up --profile=all                    Start everything (umbrella alias)
+./maintainerd up --profile=maintainerd -d         Core stack only (Core + Agent + Docker + Secret)
+./maintainerd up --profile=all -d                 Auth + core stack, no observability
+./maintainerd up --profile=all-observed -d        Everything + observability (Prometheus/Grafana/SigNoz)
 ./maintainerd down                                Stop all services
 ./maintainerd clean                               Stop services and remove all development data
 ```
