@@ -207,36 +207,20 @@ configure_https_env() {
     "$file"
 }
 
-# Emit the managed block content (markers + grouped host lines).
+# Emit the managed block content (markers + one line per managed host).
+# MANAGED_HOSTS is the single source of truth — the removal step and this writer
+# read the SAME list, so a host added there is always both cleaned and written
+# (previously this was a second hardcoded list that silently drifted).
 build_hosts_block() {
   echo "$HOSTS_BEGIN"
   echo "# ============================================"
   echo "# Maintainerd Dev - Host configuration"
+  echo "# All hosts resolve to 127.0.0.1 (the nginx TLS edge)."
   echo "# ============================================"
-  echo "# Identity (login UI) — system tenant + sample tenants"
-  echo "127.0.0.1 identity.auth.maintainerd.local"
-  echo "127.0.0.1 seguma.identity.auth.maintainerd.local"
-  echo "127.0.0.1 acme.identity.auth.maintainerd.local"
-  echo "127.0.0.1 wayne-enterprises.identity.auth.maintainerd.local"
-  echo "127.0.0.1 stark-industries.identity.auth.maintainerd.local"
-  echo "127.0.0.1 umbrella.identity.auth.maintainerd.local"
-  echo "127.0.0.1 oscorp.identity.auth.maintainerd.local"
-  echo "# Console (admin UI) — system tenant + sample tenants"
-  echo "127.0.0.1 console.auth.maintainerd.local"
-  echo "127.0.0.1 seguma.console.auth.maintainerd.local"
-  echo "127.0.0.1 acme.console.auth.maintainerd.local"
-  echo "127.0.0.1 wayne-enterprises.console.auth.maintainerd.local"
-  echo "127.0.0.1 stark-industries.console.auth.maintainerd.local"
-  echo "127.0.0.1 umbrella.console.auth.maintainerd.local"
-  echo "127.0.0.1 oscorp.console.auth.maintainerd.local"
-  echo "# APIs (tenant resolved from token/client_id, not the host)"
-  echo "127.0.0.1 identity-api.auth.maintainerd.local"
-  echo "127.0.0.1 console-api.auth.maintainerd.local"
-  echo "# Messaging & Observability"
-  echo "127.0.0.1 rabbitmq.auth.maintainerd.local"
-  echo "127.0.0.1 prometheus.auth.maintainerd.local"
-  echo "127.0.0.1 grafana.auth.maintainerd.local"
-  echo "127.0.0.1 signoz.auth.maintainerd.local"
+  local h
+  for h in "${MANAGED_HOSTS[@]}"; do
+    echo "127.0.0.1 $h"
+  done
   echo "$HOSTS_END"
 }
 
@@ -269,12 +253,21 @@ configure_hosts_block() {
 cmd_init() {
   echo "==> Cloning repositories into ${PARENT_DIR}"
 
-  # The console + identity frontends now live inside maintainerd-auth
-  # (web/console, web/identity) and ship in its single all-in-one image.
+  # Auth: backend + console/identity frontends (web/console, web/identity), shipped
+  # as a single all-in-one image (auth* profiles).
   clone_repo "maintainerd-auth"
 
+  # The maintainerd core stack + its client SDK — built by the maintainerd / all /
+  # all-observed profiles. The Docker build uses the parent dir as its context so
+  # these siblings must be present for the per-module replace directives to resolve.
+  clone_repo "maintainerd"        # core control plane
+  clone_repo "maintainerd-sdk"    # client SDK + kit (agent/secret build against it)
+  clone_repo "maintainerd-secret" # standalone secret store
+  clone_repo "maintainerd-agent"  # executor
+  clone_repo "maintainerd-docker" # runtime driver
+
   echo ""
-  echo "==> Repo cloned. Run './maintainerd setup' to create the .env file."
+  echo "==> Repos cloned. Run './maintainerd setup' to create the .env, /etc/hosts, and local certs."
 }
 
 # ── setup ─────────────────────────────────────────────────────────────────────
@@ -317,7 +310,10 @@ cmd_setup() {
   done
 
   echo ""
-  echo "==> Done. Run './maintainerd up --profile=auth' to start the auth stack."
+  echo "==> Done. Start a stack:"
+  echo "      ./maintainerd up --profile=auth -d          # auth only"
+  echo "      ./maintainerd up --profile=maintainerd -d   # core stack only"
+  echo "      ./maintainerd up --profile=all -d           # auth + core + console (console.maintainerd.local)"
 }
 
 # ── up ────────────────────────────────────────────────────────────────────────
