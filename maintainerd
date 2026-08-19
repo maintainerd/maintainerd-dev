@@ -324,6 +324,13 @@ cmd_setup() {
 cmd_up() {
   local profile=""
   local otel_enabled="false"
+  # Core-driven setup: only the full-stack profiles run Auth alongside Core, so
+  # only they enable Core's setup orchestration (and hand Auth the matching
+  # bootstrap token + gRPC). Keeping this empty for auth-only profiles leaves
+  # Auth's REST setup wizard as the bootstrap path.
+  local setup_enabled="false"
+  local auth_setup_token=""
+  local auth_grpc_enabled=""
   local -a compose_args=()
 
   while [ "$#" -gt 0 ]; do
@@ -360,10 +367,22 @@ cmd_up() {
       ;;
   esac
 
+  # The full stack (auth + core) engages Core's setup orchestration.
+  case "$profile" in
+    all|all-observed)
+      setup_enabled="true"
+      auth_setup_token="devtoken"
+      auth_grpc_enabled="true"
+      ;;
+  esac
+
   echo "==> Starting profile: ${profile}"
   cd "$SCRIPT_DIR"
   "${SCRIPT_DIR}/scripts/generate-local-certs.sh"
   MAINTAINERD_OTEL_ENABLED="$otel_enabled" \
+  MAINTAINERD_SETUP_ENABLED="$setup_enabled" \
+  MAINTAINERD_AUTH_SETUP_TOKEN="$auth_setup_token" \
+  MAINTAINERD_AUTH_GRPC_ENABLED="$auth_grpc_enabled" \
     docker compose --profile "$profile" up "${compose_args[@]}" --remove-orphans
 }
 
