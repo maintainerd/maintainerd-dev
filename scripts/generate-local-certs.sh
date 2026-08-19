@@ -63,9 +63,13 @@ if [ ! -s "$CA_KEY" ] || [ ! -s "$CA_CERT" ]; then
     -addext "keyUsage=critical,keyCertSign,cRLSign"
 fi
 
+# Regenerate when the key/cert is missing, near expiry, OR predates the core
+# console: an already-valid leaf from before *.maintainerd.local was added would
+# otherwise be kept and console.maintainerd.local would fail cert validation.
 if [ ! -s "$TLS_KEY" ] || [ ! -s "$TLS_CERT" ] || \
-   ! openssl x509 -checkend 2592000 -noout -in "$TLS_CERT" >/dev/null 2>&1; then
-  echo "  [CREATE] Wildcard certificate for *.auth.maintainerd.local"
+   ! openssl x509 -checkend 2592000 -noout -in "$TLS_CERT" >/dev/null 2>&1 || \
+   ! openssl x509 -in "$TLS_CERT" -noout -text 2>/dev/null | grep -qF '*.maintainerd.local'; then
+  echo "  [CREATE] Wildcard certificate for *.auth.maintainerd.local + *.maintainerd.local"
   # SANs cover each host tier (TLS wildcards match a single label, so every
   # depth with tenant subdomains needs its own wildcard):
   #   auth.maintainerd.local             base (WebAuthn RP ID / shared suffix)
@@ -73,11 +77,14 @@ if [ ! -s "$TLS_KEY" ] || [ ! -s "$TLS_CERT" ] || \
   #                                      console.auth, identity-api.auth, console-api.auth
   #   *.console.auth.maintainerd.local   {tenant}.console.auth (console tenants)
   #   *.identity.auth.maintainerd.local  {tenant}.identity.auth (identity/login tenants)
+  #   *.maintainerd.local                core stack hosts: console.maintainerd,
+  #                                      console-api.maintainerd
+  #   maintainerd.local                  base suffix
   openssl req -new -newkey rsa:2048 -sha256 -nodes \
     -keyout "$TLS_KEY" \
     -out "$TLS_CSR" \
     -subj "/CN=*.auth.maintainerd.local" \
-    -addext "subjectAltName=DNS:*.auth.maintainerd.local,DNS:auth.maintainerd.local,DNS:*.console.auth.maintainerd.local,DNS:*.identity.auth.maintainerd.local"
+    -addext "subjectAltName=DNS:*.auth.maintainerd.local,DNS:auth.maintainerd.local,DNS:*.console.auth.maintainerd.local,DNS:*.identity.auth.maintainerd.local,DNS:*.maintainerd.local,DNS:maintainerd.local"
 
   openssl x509 -req -sha256 -days 825 \
     -in "$TLS_CSR" \

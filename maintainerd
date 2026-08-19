@@ -41,6 +41,9 @@ MANAGED_HOSTS=(
   prometheus.auth.maintainerd.local
   grafana.auth.maintainerd.local
   signoz.auth.maintainerd.local
+  # Core console (maintainerd's main dashboard) + its REST API host
+  console.maintainerd.local
+  console-api.maintainerd.local
 )
 
 # Hostnames from earlier layouts, removed on setup so no stale lines linger.

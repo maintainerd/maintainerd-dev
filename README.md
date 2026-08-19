@@ -46,10 +46,28 @@ and `all` stay observability-free.
 | `m9d-docker` | `maintainerd-docker` | — | runtime — drives the host Docker Engine (socket mounted; runs as root) |
 | `m9d-secret` | `maintainerd-secret` | — | standalone encrypted secret store (`secret.v1`) |
 | `m9d-core-db` | `postgres:16-alpine` | — | Core's database |
+| `m9d-core-console-dev` | `maintainerd/web/console` | — (via nginx) | the platform's main dashboard (React/Vite) — **all / all-observed only** |
 
 Only Core publishes ports to the host; the rest talk over the compose network.
 **Workload containers** the stack runs (e.g. an `nginx` you ask Core for) appear
 on the **host** Docker engine, because `m9d-docker` drives the mounted host socket.
+
+## Core console (main dashboard)
+
+The control-plane UI, modelled on the auth console. It runs under the **`all`** and
+**`all-observed`** profiles (it needs nginx as the TLS edge, which those profiles
+start), served hot-reloaded through nginx at:
+
+```
+https://console.maintainerd.local
+```
+
+It talks to the core REST API same-origin (nginx routes `/api/` → `m9d-core:8080`).
+The console has **no login yet** — it boots straight to the dashboard, because the
+core control plane currently requires no auth. Pick the active tenant with the
+top-bar switcher; projects/services/providers/agents are scoped to it, and
+resources live under a project. Run `./maintainerd setup` once so `/etc/hosts` and
+the local TLS cert (now covering `*.maintainerd.local`) include the console host.
 
 ## Verify the loop end-to-end
 

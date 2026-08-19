@@ -193,6 +193,10 @@ services:
           - prometheus.auth.maintainerd.local
           - grafana.auth.maintainerd.local
           - signoz.auth.maintainerd.local
+          # Core console (maintainerd's main dashboard) — served under the
+          # all / all-observed profiles alongside the core stack.
+          - console.maintainerd.local
+          - console-api.maintainerd.local
     depends_on:
       maintainerd-auth:
         condition: service_started
@@ -242,6 +246,31 @@ services:
       - CHOKIDAR_INTERVAL=300
     depends_on:
       - maintainerd-auth
+    init: true
+    restart: unless-stopped
+
+  # ── Core console (maintainerd's main dashboard) ──────────────────────────────
+  # The control-plane UI. Vite dev server (hot reload) reached through nginx at
+  # https://console.maintainerd.local. Talks to the core REST API same-origin
+  # (nginx routes /api/ → m9d-core:8080). Runs with the core stack under the
+  # all / all-observed profiles.
+  maintainerd-core-console:
+    build:
+      context: ../maintainerd/web/console
+      dockerfile: Dockerfile.local
+    image: m9d-core-console-dev
+    container_name: m9d-core-console-dev
+    profiles: ["all", "all-observed"]
+    volumes:
+      - ../maintainerd/web/console:/app
+      - core-console-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+      # Polling is reliable for bind mounts and avoids host inotify exhaustion.
+      - CHOKIDAR_USEPOLLING=true
+      - CHOKIDAR_INTERVAL=300
+    depends_on:
+      - m9d-core
     init: true
     restart: unless-stopped
 
@@ -459,6 +488,7 @@ volumes:
   go-build-cache:
   console-node-modules:
   identity-node-modules:
+  core-console-node-modules:
   prometheus-data:
   grafana-data:
 
