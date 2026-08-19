@@ -7,6 +7,106 @@ both SPAs (`web/console`, `web/identity`). In dev you run the three as hot-reloa
 containers (`auth` profile); to test the compiled single all-in-one image the way
 it ships, use the `auth-release` profile.
 
+> **Two stacks live in this repo.** The **maintainerd core stack**
+> (`docker-compose.maintainerd.yml`, the `all` profile — documented right below)
+> and the **auth stack** (`docker-compose.yml`, the `auth*` profiles — documented
+> under *Auth stack* further down). They are separate compose files; run whichever
+> you need.
+
+# maintainerd core stack
+
+The control-plane suite — **Core + Agent + Docker + Secret + Postgres** — in one
+command. Use this to confirm the whole platform runs and the control loop turns.
+
+## Run everything
+
+```bash
+docker compose -f docker-compose.maintainerd.yml --profile all up --build
+```
+
+First run builds all four service images from source (a few minutes); later runs
+reuse the cache. Tear it down (also drops Core's DB volume) with:
+
+```bash
+docker compose -f docker-compose.maintainerd.yml --profile all down -v
+```
+
+## What runs
+
+| Service | Built from | Host ports | Role |
+|---------|-----------|-----------|------|
+| `m9d-core` | `maintainerd` | `8080` REST · `8081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
+| `m9d-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
+| `m9d-docker` | `maintainerd-docker` | — | runtime — drives the host Docker Engine (socket mounted; runs as root) |
+| `m9d-secret` | `maintainerd-secret` | — | standalone encrypted secret store (`secret.v1`) |
+| `m9d-core-db` | `postgres:16-alpine` | — | Core's database |
+
+Only Core publishes ports to the host; the rest talk over the compose network.
+**Workload containers** the stack runs (e.g. an `nginx` you ask Core for) appear
+on the **host** Docker engine, because `m9d-docker` drives the mounted host socket.
+
+## Verify the loop end-to-end
+
+```bash
+docker compose -f docker-compose.maintainerd.yml --profile all ps   # all 5 up
+curl localhost:8080/healthz                                         # {"status":"ok"}
+
+# create a resource; Core -> Agent -> Docker will run it, then report back
+B=http://localhost:8080/api/v1
+TEN=$(curl -s -XPOST $B/tenants  -d '{"name":"system","is_system":true}'          | jq -r .data.tenant_uuid)
+PRJ=$(curl -s -XPOST $B/projects -d "{\"tenant_uuid\":\"$TEN\",\"name\":\"default\"}" | jq -r .data.project_uuid)
+RES=$(curl -s -XPOST $B/resources -d "{\"project_uuid\":\"$PRJ\",\"kind\":\"container\",\"name\":\"web\",\"spec\":{\"image\":\"nginx:alpine\",\"name\":\"m9d-web\"}}" | jq -r .data.resource_uuid)
+
+sleep 8
+curl -s $B/resources/$RES | jq '.data | {state, observed_generation, status}'  # state: "running"
+docker ps --filter name=m9d-web                                                # the container the stack ran
+```
+
+```
+Core (decides)  --PullWork-->  Agent (executes)  --Run-->  Docker (runs container)
+      ^                                                            |
+      +----------------------- ReportStatus ------------------------+
+```
+
+## How the images build (multi-repo)
+
+The services live in separate repos that reference each other via local `go.mod`
+`replace` directives. `build/Dockerfile` builds any service from the **parent
+directory** as the build context (so the sibling modules are present and the
+replaces resolve); `build/Dockerfile.dockerignore` trims that context to just the
+Go modules; `GOTOOLCHAIN=auto` lets the build fetch the exact Go toolchain the
+modules pin.
+
+> A Go workspace (`go.work`) is intentionally **not** used for the container build
+> — it unified dependency versions across modules and broke Core's OpenTelemetry
+> setup. The per-module `replace` directives are the mechanism.
+
+## Config (env, set in `docker-compose.maintainerd.yml`)
+
+| Var | Service | Purpose |
+|-----|---------|---------|
+| `DB_*` | core | Postgres connection; `DB_PASSWORD` resolves via `SECRET_PROVIDER` |
+| `SECRET_PROVIDER` | all | secret source, default `env` |
+| `SECRET_ROOT_KEY` | secret | 32-byte AES-256 root key for the store (dev value in compose) |
+| `SETUP_BOOTSTRAP_TOKEN` | secret | gates the one-time `Setup` (controller registration) |
+| `RUNTIME_ADDR` | agent | Docker service address (`m9d-docker:9090`) |
+| `CORE_ADDR` | agent | Core AgentGateway (`m9d-core:8081`) |
+| `GRPC_PORT` / `HTTP_PORT` | each | per-service listen ports |
+
+## Known limitations (dev stack)
+
+- **In-memory secret store** — `m9d-secret` v1 keeps secrets in memory; a restart
+  loses them. `SECRET_ROOT_KEY` is a fixed dev value.
+- **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
+  and system-Auth enforcement are not wired yet.
+- **`m9d-docker` runs as root** to read the mounted host socket (dev convenience).
+- **Auth is not in this stack yet** — Core/Agent/Docker/Secret only. Running Auth
+  as a Core-controlled system service is the next integration.
+
+---
+
+# Auth stack
+
 ## Quick start
 
 ```bash
