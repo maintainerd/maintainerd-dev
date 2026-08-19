@@ -1,0 +1,36 @@
+# Build-context ignore for the multi-module Go build (context = the parent dir
+# holding all sibling modules). BuildKit reads this file next to the Dockerfile.
+# Keep the Go module dirs; drop everything heavy/irrelevant.
+**/.git
+**/bin
+**/graphify-out
+**/node_modules
+**/*.test
+**/coverage*.out
+
+# Non-module sibling dirs not needed to build the core stack
+maintainerd-auth
+maintainerd-demo
+maintainerd.github.io
+maintainerd-dev
+plan
+ai-files
+testing
+ssh
+demo-certificate
+.certs
+.secrets
+.obsidian
+
+# Assets / docs
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.txt
+Screenshot*
+sample.png
+
+# workspace file skews cross-module dep resolution in the container build
+go.work
+go.work.sum
