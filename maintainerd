@@ -363,10 +363,13 @@ cmd_up() {
       ;;
   esac
 
-  # The full stack (auth + core) engages Core's setup orchestration.
+  # The full stack (auth + core) wires Core to Auth's gRPC setup so the console
+  # setup wizard can drive provisioning. setup_enabled stays false: the wizard
+  # (not an unattended on-boot run) creates the tenant + admin. Set
+  # MAINTAINERD_SETUP_ENABLED=true yourself for an unattended env-driven install.
   case "$profile" in
     all|all-observed)
-      setup_enabled="true"
+      setup_enabled="false"
       auth_setup_token="devtoken"
       auth_grpc_enabled="true"
       ;;
