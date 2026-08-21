@@ -16,13 +16,13 @@ it ships, use the `auth-release` profile.
 
 # maintainerd core stack
 
-The control-plane suite — **Core + Agent + Docker + Secret + Postgres** — in one
+The control-plane suite — **Core + Agent (docker driver compiled in) + Secret + Postgres** — in one
 command. Use this to confirm the whole platform runs and the control loop turns.
 
 ## Run everything
 
 ```bash
-# core stack only (Core + Agent + Docker + Secret + its Postgres)
+# core stack only (Core + Agent + Secret + its Postgres)
 ./maintainerd up --profile=maintainerd -d --build
 
 # auth + core together, no observability
@@ -43,14 +43,13 @@ and `all` stay observability-free.
 |---------|-----------|-----------|------|
 | `m9d-core` | `maintainerd` | `9080` REST · `9081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
 | `m9d-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
-| `m9d-docker` | `maintainerd-docker` | — | runtime — drives the host Docker Engine (socket mounted; runs as root) |
 | `m9d-secret` | `maintainerd-secret` | — | standalone encrypted secret store (`secret.v1`) |
 | `m9d-core-db` | `postgres:16-alpine` | — | Core's database |
 | `m9d-core-console-dev` | `maintainerd/web/console` | — (via nginx) | the platform's main dashboard (React/Vite) — **all / all-observed only** |
 
 Only Core publishes ports to the host; the rest talk over the compose network.
 **Workload containers** the stack runs (e.g. an `nginx` you ask Core for) appear
-on the **host** Docker engine, because `m9d-docker` drives the mounted host socket.
+on the **host** Docker engine, because the agent's compiled-in docker driver uses the mounted host socket.
 
 ## Core console (main dashboard)
 
@@ -113,7 +112,6 @@ modules pin.
 | `SECRET_PROVIDER` | all | secret source, default `env` |
 | `SECRET_ROOT_KEY` | secret | 32-byte AES-256 root key for the store (dev value in compose) |
 | `SETUP_BOOTSTRAP_TOKEN` | secret | gates the one-time `Setup` (controller registration) |
-| `RUNTIME_ADDR` | agent | Docker service address (`m9d-docker:9090`) |
 | `CORE_ADDR` | agent | Core AgentGateway (`m9d-core:8081`) |
 | `GRPC_PORT` / `HTTP_PORT` | each | per-service listen ports |
 
@@ -123,7 +121,7 @@ modules pin.
   loses them. `SECRET_ROOT_KEY` is a fixed dev value.
 - **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
   and system-Auth enforcement are not wired yet.
-- **`m9d-docker` runs as root** to read the mounted host socket (dev convenience).
+- **`m9d-agent` runs as root** to read the mounted host socket (dev convenience) — the docker runtime driver is compiled into the agent.
 - **Auth co-runs but isn't wired to Core yet** — the `all`/`all-observed` profiles
   start Auth alongside the core stack, but Core does not yet provision or govern it.
   Running Auth as a Core-controlled system service (system-Auth / IAM) is the next
@@ -162,7 +160,7 @@ Console: https://console.auth.maintainerd.local
 ./maintainerd up --profile=auth                   Dev: 3 apps in hot-reload (no observability)
 ./maintainerd up --profile=auth-release --build   Release parity: the compiled all-in-one image
 ./maintainerd up --profile=auth-observed -d       Dev auth + observability, detached
-./maintainerd up --profile=maintainerd -d         Core stack only (Core + Agent + Docker + Secret)
+./maintainerd up --profile=maintainerd -d         Core stack only (Core + Agent + Secret)
 ./maintainerd up --profile=all -d                 Auth + core stack, no observability
 ./maintainerd up --profile=all-observed -d        Everything + observability (Prometheus/Grafana/SigNoz)
 ./maintainerd down                                Stop all services
