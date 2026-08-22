@@ -407,6 +407,23 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Secret's own Postgres. It is a real vault now (tenant → project →
+  # environment → folder → secret → immutable versions), so it needs a database
+  # of its own rather than sharing core's.
+  m9d-secret-db:
+    image: postgres:16-alpine
+    profiles: ["maintainerd", "all", "all-observed"]
+    environment:
+      POSTGRES_USER: secret
+      POSTGRES_PASSWORD: secretpass
+      POSTGRES_DB: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secret -d secret"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   m9d-secret:
     build:
       context: ..
@@ -415,12 +432,59 @@ services:
         SERVICE: maintainerd-secret
         CMD_PATH: cmd/secretd
     profiles: ["maintainerd", "all", "all-observed"]
+    depends_on:
+      m9d-secret-db:
+        condition: service_healthy
     environment:
       APP_ENV: development
-      SECRET_ROOT_KEY: "0123456789abcdef0123456789abcdef"
+      DB_HOST: m9d-secret-db
+      DB_PORT: "5432"
+      DB_USER: secret
+      DB_PASSWORD: secretpass
+      DB_NAME: secret
+      DB_SSLMODE: disable
+      # 64 hex characters = the 32-byte AES-256 KEK the envelope crypto requires.
+      # A shorter value is refused at boot rather than silently padded, because a
+      # weakened root key nobody notices is worse than a service that will not start.
+      SECRET_ROOT_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       SETUP_BOOTSTRAP_TOKEN: devtoken
       GRPC_PORT: "9092"
       HTTP_PORT: "8092"
+      # The bearer-token verifier. These three are all-or-nothing: a JWKS URL
+      # without an issuer and audience check accepts any token Auth ever signed,
+      # so the service refuses a partial set at boot. Left EMPTY by default, which
+      # (with APP_ENV=development) puts the guard in development-open mode and
+      # lets the console talk to the API before Auth has a client for it. Set all
+      # three to exercise real enforcement.
+      AUTH_JWKS_URL: ${MAINTAINERD_SECRET_AUTH_JWKS_URL:-}
+      AUTH_ISSUER: ${MAINTAINERD_SECRET_AUTH_ISSUER:-}
+      AUTH_AUDIENCE: ${MAINTAINERD_SECRET_AUTH_AUDIENCE:-}
+    restart: unless-stopped
+
+  # ── Secret console (maintainerd-secret's own dashboard) ─────────────────────
+  # Secret is adoptable alone — an org can run just it plus Auth — so it ships a
+  # console of its own rather than a page inside core's. Vite dev server (hot
+  # reload) reached through nginx at https://console.secret.maintainerd.local,
+  # which also routes /api/ → m9d-secret:8092 so the SPA talks to the API
+  # same-origin.
+  m9d-secret-console:
+    build:
+      context: ../maintainerd-secret/web/console
+      dockerfile: Dockerfile.local
+    image: m9d-secret-console-dev
+    container_name: m9d-secret-console
+    profiles: ["maintainerd", "all", "all-observed"]
+    volumes:
+      - ../maintainerd-secret/web/console:/app
+      - secret-console-node-modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+      # Polling is reliable for bind mounts and avoids host inotify exhaustion.
+      - CHOKIDAR_USEPOLLING=true
+      - CHOKIDAR_INTERVAL=300
+    depends_on:
+      - m9d-secret
+    init: true
     restart: unless-stopped
 
   # NOTE: the former m9d-docker service is gone — the docker runtime driver is
@@ -520,6 +584,7 @@ volumes:
   m9d-agent-state:
   identity-node-modules:
   core-console-node-modules:
+  secret-console-node-modules:
   prometheus-data:
   grafana-data:
 
