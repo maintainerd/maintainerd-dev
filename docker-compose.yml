@@ -448,6 +448,15 @@ services:
       # weakened root key nobody notices is worse than a service that will not start.
       SECRET_ROOT_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       SETUP_BOOTSTRAP_TOKEN: devtoken
+      # STANDALONE even under the `all` profile, where Core is running. Core
+      # provisions Secret's IAM records in Auth (its steward catalog carries the
+      # twelve permissions), but nothing yet drives Secret's OWN gRPC
+      # SetupService to create its tenant mirror and default project/environment
+      # — that is the open "provider registration" item. In `core` mode Secret
+      # closes its REST setup wizard from first boot, so flipping this now would
+      # leave the instance with no bootstrap path at all. When Core starts
+      # driving that surface, set MAINTAINERD_SECRET_MODE=core.
+      MAINTAINERD_MODE: ${MAINTAINERD_SECRET_MODE:-standalone}
       GRPC_PORT: "9092"
       HTTP_PORT: "8092"
       # The bearer-token verifier. These three are all-or-nothing: a JWKS URL

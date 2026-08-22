@@ -43,7 +43,9 @@ and `all` stay observability-free.
 |---------|-----------|-----------|------|
 | `m9d-core` | `maintainerd` | `9080` REST · `9081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
 | `m9d-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
-| `m9d-secret` | `maintainerd-secret` | — | standalone encrypted secret store (`secret.v1`) |
+| `m9d-secret` | `maintainerd-secret` | — | encrypted secret store — envelope-encrypted, versioned, audited (`secret.v1`) |
+| `m9d-secret-db` | `postgres:16-alpine` | — | Secret's database |
+| `m9d-secret-console` | `maintainerd-secret/web/console` | — (via nginx) | Secret's **own** dashboard (React/Vite) — it is adoptable alone, so it ships one |
 | `m9d-core-db` | `postgres:16-alpine` | — | Core's database |
 | `m9d-core-console-dev` | `maintainerd/web/console` | — (via nginx) | the platform's main dashboard (React/Vite) — **all / all-observed only** |
 
@@ -68,10 +70,26 @@ top-bar switcher; projects/services/providers/agents are scoped to it, and
 resources live under a project. Run `./maintainerd setup` once so `/etc/hosts` and
 the local TLS cert (now covering `*.maintainerd.local`) include the console host.
 
+### Secret console
+
+Secret ships a console of its own — it is adoptable alone, so it does not live
+inside Core's. Same profiles (`all`, `all-observed`, and `maintainerd`), served
+through nginx at:
+
+```
+https://console.secret.maintainerd.local
+```
+
+`/api/` is proxied same-origin to `m9d-secret:8092`. In dev, Secret boots
+**guard-open** with a loud banner — no `AUTH_*` or client credentials are set —
+so its permission checks are not enforced locally and the console needs no
+sign-in. Enforcing them locally means giving Secret a real Auth issuer/audience
+and creating its two clients; the runbook for that is in Secret's own docs.
+
 ## Verify the loop end-to-end
 
 ```bash
-docker compose --profile maintainerd ps   # all 5 up
+docker compose --profile maintainerd ps   # Core, Agent, Secret (+ their DBs and consoles)
 curl localhost:9080/healthz               # {"status":"ok"}
 
 # create a resource; Core -> Agent -> Docker will run it, then report back
@@ -117,8 +135,14 @@ modules pin.
 
 ## Known limitations (dev stack)
 
-- **In-memory secret store** — `m9d-secret` v1 keeps secrets in memory; a restart
-  loses them. `SECRET_ROOT_KEY` is a fixed dev value.
+- **Secret runs standalone, not Core-attached** — `MAINTAINERD_MODE` stays
+  `standalone` even under `all`. Core provisions Secret's IAM records in Auth,
+  but nothing yet drives Secret's own gRPC `SetupService`, and `core` mode closes
+  its REST setup wizard — so flipping it now would leave no bootstrap path.
+  Override with `MAINTAINERD_SECRET_MODE=core` once that lands.
+- **Secret's guards are dev-open** — no `AUTH_*` or client credentials are set,
+  so it boots with the loud guard-open banner and its permission checks are not
+  enforced locally. `SECRET_ROOT_KEY` is a fixed dev value.
 - **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
   and system-Auth enforcement are not wired yet.
 - **`m9d-agent` runs as root** to read the mounted host socket (dev convenience) — the docker runtime driver is compiled into the agent.
@@ -255,6 +279,16 @@ from the request (bearer token / `client_id`), never the hostname.
 | `prometheus.auth.maintainerd.local`  | Prometheus (`auth-observed`) |
 | `grafana.auth.maintainerd.local`     | Grafana (`auth-observed`) |
 | `signoz.auth.maintainerd.local`      | SigNoz (`auth-observed`) |
+| `console.maintainerd.local`          | Core console — the platform dashboard (nginx → `m9d-core-console:3000`) |
+| `console-api.maintainerd.local`      | Core REST API (nginx → `m9d-core:8080`) |
+| `console.secret.maintainerd.local`   | **Secret console** (nginx → `m9d-secret-console:3000`, `/api/` → `m9d-secret:8092`) |
+| `console-api.secret.maintainerd.local` | Secret REST API (nginx → `m9d-secret:8092`) |
+
+Secret's console lives on its own host rather than inside Core's, because Secret
+is adoptable alone — an organization can run just it plus Auth. Note the extra
+label: a TLS wildcard matches exactly one, so `*.maintainerd.local` does **not**
+cover `console.secret.…` and `setup` issues a `*.secret.maintainerd.local` SAN
+for it.
 
 `/etc/hosts` has no wildcard support, so `setup` only adds the system-tenant
 hosts above. To test a regular tenant, add its subdomains manually — the

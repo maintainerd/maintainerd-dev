@@ -267,9 +267,12 @@ cmd_init() {
   clone_repo "maintainerd"        # core control plane
   clone_repo "maintainerd-sdk"    # public client SDK (call maintainerd)
   clone_repo "maintainerd-kit"    # internal framework + control plane (build/operate)
-  clone_repo "maintainerd-secret" # standalone secret store (builds on the kit)
-  clone_repo "maintainerd-agent"  # executor (builds on the sdk)
-  clone_repo "maintainerd-docker" # runtime driver
+  clone_repo "maintainerd-secret" # standalone secret store (builds on the kit + sdk)
+  clone_repo "maintainerd-agent"  # executor, with the runtime drivers compiled in
+  # NOTE: maintainerd-docker is deliberately NOT cloned. The docker runtime
+  # driver is a package inside the agent now (see plan/14-target-architecture.md);
+  # that repo is archived, and cloning it would suggest the dev stack still runs
+  # it as a service.
 
   echo ""
   echo "==> Repos cloned. Run './maintainerd setup' to create the .env, /etc/hosts, and local certs."
