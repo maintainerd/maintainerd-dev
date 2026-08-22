@@ -44,6 +44,10 @@ MANAGED_HOSTS=(
   # Core console (maintainerd's main dashboard) + its REST API host
   console.maintainerd.local
   console-api.maintainerd.local
+  # Secret console + its REST API host. Secret is adoptable alone (an org can run
+  # just it plus Auth), so it ships its own console rather than a page in core's.
+  console.secret.maintainerd.local
+  console-api.secret.maintainerd.local
 )
 
 # Hostnames from earlier layouts, removed on setup so no stale lines linger.
