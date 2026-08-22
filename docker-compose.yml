@@ -203,6 +203,9 @@ services:
           # all / all-observed profiles alongside the core stack.
           - console.maintainerd.local
           - console-api.maintainerd.local
+          # Secret's own console (it is adoptable alone, so it has one).
+          - console.secret.maintainerd.local
+          - console-api.secret.maintainerd.local
     depends_on:
       maintainerd-auth:
         condition: service_started
