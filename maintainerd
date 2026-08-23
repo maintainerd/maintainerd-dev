@@ -334,6 +334,9 @@ cmd_up() {
   # Auth's REST setup wizard as the bootstrap path.
   local setup_enabled="false"
   local auth_setup_token=""
+  # Empty on the auth-only profiles: core is not running there, so nothing drives
+  # secret's setup and an empty SECRET_SETUP_BOOTSTRAP_TOKEN is the honest value.
+  local secret_setup_token=""
   local auth_grpc_enabled=""
   local -a compose_args=()
 
@@ -380,6 +383,12 @@ cmd_up() {
       setup_enabled="false"
       auth_setup_token="devtoken"
       auth_grpc_enabled="true"
+      # Core also drives SECRET's gRPC SetupService under these profiles, which is
+      # the controlled-mode path: core registers secret's IAM records in Auth from
+      # its catalog, then tells secret itself. Must match m9d-secret's own
+      # SETUP_BOOTSTRAP_TOKEN in docker-compose.yml, or the setup call is refused
+      # and secret stays unprovisioned while every other probe reports it healthy.
+      secret_setup_token="devtoken"
       ;;
   esac
 
@@ -389,6 +398,7 @@ cmd_up() {
   MAINTAINERD_OTEL_ENABLED="$otel_enabled" \
   MAINTAINERD_SETUP_ENABLED="$setup_enabled" \
   MAINTAINERD_AUTH_SETUP_TOKEN="$auth_setup_token" \
+  MAINTAINERD_SECRET_SETUP_TOKEN="$secret_setup_token" \
   MAINTAINERD_AUTH_GRPC_ENABLED="$auth_grpc_enabled" \
     docker compose --profile "$profile" up "${compose_args[@]}" --remove-orphans
 }

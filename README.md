@@ -86,11 +86,56 @@ so its permission checks are not enforced locally and the console needs no
 sign-in. Enforcing them locally means giving Secret a real Auth issuer/audience
 and creating its two clients; the runbook for that is in Secret's own docs.
 
+## Startup order (auth + secret are hard dependencies of core)
+
+**auth, core and secret start at the same time.** Core does not wait for them —
+it converges toward them:
+
+```
+auth ─┐
+core ─┼─ all start together (compose: condition: service_started)
+secret┘
+
+core → configures auth      via auth's gRPC SetupService
+core → configures secret    via secret's gRPC SetupService, strictly after auth
+```
+
+Compose deliberately uses `condition: service_started` rather than
+`service_healthy` for auth and secret. Waiting for healthy would serialise a
+startup meant to be concurrent, and would deadlock the case where a dependency's
+own health depends on core having configured it. Core retries with backoff
+instead, so "not listening yet" is a normal early state rather than an error.
+
+`m9d-core`'s healthcheck hits **`/readyz`**, not `/healthz`, because readiness is
+what carries the dependency state. Four checks, and they fail independently:
+
+| Check | Answers |
+|---|---|
+| `database` | can core reach its own PostgreSQL |
+| `auth` | is the guard usable, and is auth reachable |
+| `secret` | can core reach the vault |
+| `secret-setup` | has the vault been **provisioned** |
+
+The last two are separate on purpose: a vault that answers every network probe
+but was never provisioned looks healthy and refuses every real call.
+
+Outside development a missing `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE`,
+`AUTH_TOKEN_URL` or `SECRET_BASE_URL` is a **boot error naming them all at
+once**. `APP_ENV=development` downgrades that to a warning so you can work on one
+service alone — but the guards open, and any provision needing secret material
+still fails closed rather than silently writing a credential into a container's
+environment.
+
+**If secret is down:** core still boots and serves, existing workloads keep
+running, and the console answers. `/readyz` reports not-ready and provisioning
+that needs secret material refuses. A vault outage is not a control-plane outage.
+
 ## Verify the loop end-to-end
 
 ```bash
 docker compose --profile maintainerd ps   # Core, Agent, Secret (+ their DBs and consoles)
-curl localhost:9080/healthz               # {"status":"ok"}
+curl localhost:9080/healthz               # {"status":"ok"}  — liveness
+curl localhost:9080/readyz | jq           # readiness, incl. auth/secret/secret-setup
 
 # create a resource; Core -> Agent -> Docker will run it, then report back
 B=http://localhost:9080/api/v1
