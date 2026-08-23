@@ -41,13 +41,13 @@ and `all` stay observability-free.
 
 | Service | Built from | Host ports | Role |
 |---------|-----------|-----------|------|
-| `m9d-core` | `maintainerd` | `9080` REST · `9081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
-| `m9d-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
-| `m9d-secret` | `maintainerd-secret` | — | encrypted secret store — envelope-encrypted, versioned, audited (`secret.v1`) |
-| `m9d-secret-db` | `postgres:16-alpine` | — | Secret's database |
-| `m9d-secret-console` | `maintainerd-secret/web/console` | — (via nginx) | Secret's **own** dashboard (React/Vite) — it is adoptable alone, so it ships one |
-| `m9d-core-db` | `postgres:16-alpine` | — | Core's database |
-| `m9d-core-console-dev` | `maintainerd/web/console` | — (via nginx) | the platform's main dashboard (React/Vite) — **all / all-observed only** |
+| `maintainerd-core` | `maintainerd` | `9080` REST · `9081` gRPC | control plane — tenants/projects/resources/…, serves `core.v1` |
+| `maintainerd-agent` | `maintainerd-agent` | — | executor — pulls work from Core, runs it via Docker |
+| `maintainerd-secret` | `maintainerd-secret` | — | encrypted secret store — envelope-encrypted, versioned, audited (`secret.v1`) |
+| `maintainerd-secret-db` | `postgres:16-alpine` | — | Secret's database |
+| `maintainerd-secret-console` | `maintainerd-secret/web/console` | — (via nginx) | Secret's **own** dashboard (React/Vite) — it is adoptable alone, so it ships one |
+| `maintainerd-core-db` | `postgres:16-alpine` | — | Core's database |
+| `maintainerd-core-console-dev` | `maintainerd/web/console` | — (via nginx) | the platform's main dashboard (React/Vite) — **all / all-observed only** |
 
 Only Core publishes ports to the host; the rest talk over the compose network.
 **Workload containers** the stack runs (e.g. an `nginx` you ask Core for) appear
@@ -63,7 +63,7 @@ start), served hot-reloaded through nginx at:
 https://console.maintainerd.local
 ```
 
-It talks to the core REST API same-origin (nginx routes `/api/` → `m9d-core:8080`).
+It talks to the core REST API same-origin (nginx routes `/api/` → `maintainerd-core:8080`).
 The console has **no login yet** — it boots straight to the dashboard, because the
 core control plane currently requires no auth. Pick the active tenant with the
 top-bar switcher; projects/services/providers/agents are scoped to it, and
@@ -80,7 +80,7 @@ through nginx at:
 https://console.secret.maintainerd.local
 ```
 
-`/api/` is proxied same-origin to `m9d-secret:8092`. In dev, Secret boots
+`/api/` is proxied same-origin to `maintainerd-secret:8092`. In dev, Secret boots
 **guard-open** with a loud banner — no `AUTH_*` or client credentials are set —
 so its permission checks are not enforced locally and the console needs no
 sign-in. Enforcing them locally means giving Secret a real Auth issuer/audience
@@ -106,7 +106,7 @@ startup meant to be concurrent, and would deadlock the case where a dependency's
 own health depends on core having configured it. Core retries with backoff
 instead, so "not listening yet" is a normal early state rather than an error.
 
-`m9d-core`'s healthcheck hits **`/readyz`**, not `/healthz`, because readiness is
+`maintainerd-core`'s healthcheck hits **`/readyz`**, not `/healthz`, because readiness is
 what carries the dependency state. Four checks, and they fail independently:
 
 | Check | Answers |
@@ -141,11 +141,11 @@ curl localhost:9080/readyz | jq           # readiness, incl. auth/secret/secret-
 B=http://localhost:9080/api/v1
 TEN=$(curl -s -XPOST $B/tenants  -d '{"name":"system","is_system":true}'          | jq -r .data.tenant_uuid)
 PRJ=$(curl -s -XPOST $B/projects -d "{\"tenant_uuid\":\"$TEN\",\"name\":\"default\"}" | jq -r .data.project_uuid)
-RES=$(curl -s -XPOST $B/resources -d "{\"project_uuid\":\"$PRJ\",\"kind\":\"container\",\"name\":\"web\",\"spec\":{\"image\":\"nginx:alpine\",\"name\":\"m9d-web\"}}" | jq -r .data.resource_uuid)
+RES=$(curl -s -XPOST $B/resources -d "{\"project_uuid\":\"$PRJ\",\"kind\":\"container\",\"name\":\"web\",\"spec\":{\"image\":\"nginx:alpine\",\"name\":\"maintainerd-web\"}}" | jq -r .data.resource_uuid)
 
 sleep 8
 curl -s $B/resources/$RES | jq '.data | {state, observed_generation, status}'  # state: "running"
-docker ps --filter name=m9d-web                                                # the container the stack ran
+docker ps --filter name=maintainerd-web                                                # the container the stack ran
 ```
 
 ```
@@ -175,7 +175,7 @@ modules pin.
 | `SECRET_PROVIDER` | all | secret source, default `env` |
 | `SECRET_ROOT_KEY` | secret | 32-byte AES-256 root key for the store (dev value in compose) |
 | `SETUP_BOOTSTRAP_TOKEN` | secret | gates the one-time `Setup` (controller registration) |
-| `CORE_ADDR` | agent | Core AgentGateway (`m9d-core:8081`) |
+| `CORE_ADDR` | agent | Core AgentGateway (`maintainerd-core:8081`) |
 | `GRPC_PORT` / `HTTP_PORT` | each | per-service listen ports |
 
 ## Known limitations (dev stack)
@@ -190,7 +190,7 @@ modules pin.
   enforced locally. `SECRET_ROOT_KEY` is a fixed dev value.
 - **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
   and system-Auth enforcement are not wired yet.
-- **`m9d-agent` runs as root** to read the mounted host socket (dev convenience) — the docker runtime driver is compiled into the agent.
+- **`maintainerd-agent` runs as root** to read the mounted host socket (dev convenience) — the docker runtime driver is compiled into the agent.
 - **Auth co-runs but isn't wired to Core yet** — the `all`/`all-observed` profiles
   start Auth alongside the core stack, but Core does not yet provision or govern it.
   Running Auth as a Core-controlled system service (system-Auth / IAM) is the next
@@ -324,10 +324,10 @@ from the request (bearer token / `client_id`), never the hostname.
 | `prometheus.auth.maintainerd.local`  | Prometheus (`auth-observed`) |
 | `grafana.auth.maintainerd.local`     | Grafana (`auth-observed`) |
 | `signoz.auth.maintainerd.local`      | SigNoz (`auth-observed`) |
-| `console.maintainerd.local`          | Core console — the platform dashboard (nginx → `m9d-core-console:3000`) |
-| `console-api.maintainerd.local`      | Core REST API (nginx → `m9d-core:8080`) |
-| `console.secret.maintainerd.local`   | **Secret console** (nginx → `m9d-secret-console:3000`, `/api/` → `m9d-secret:8092`) |
-| `console-api.secret.maintainerd.local` | Secret REST API (nginx → `m9d-secret:8092`) |
+| `console.maintainerd.local`          | Core console — the platform dashboard (nginx → `maintainerd-core-console:3000`) |
+| `console-api.maintainerd.local`      | Core REST API (nginx → `maintainerd-core:8080`) |
+| `console.secret.maintainerd.local`   | **Secret console** (nginx → `maintainerd-secret-console:3000`, `/api/` → `maintainerd-secret:8092`) |
+| `console-api.secret.maintainerd.local` | Secret REST API (nginx → `maintainerd-secret:8092`) |
 
 Secret's console lives on its own host rather than inside Core's, because Secret
 is adoptable alone — an organization can run just it plus Auth. Note the extra

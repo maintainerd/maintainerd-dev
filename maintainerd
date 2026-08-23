@@ -385,7 +385,7 @@ cmd_up() {
       auth_grpc_enabled="true"
       # Core also drives SECRET's gRPC SetupService under these profiles, which is
       # the controlled-mode path: core registers secret's IAM records in Auth from
-      # its catalog, then tells secret itself. Must match m9d-secret's own
+      # its catalog, then tells secret itself. Must match maintainerd-secret's own
       # SETUP_BOOTSTRAP_TOKEN in docker-compose.yml, or the setup call is refused
       # and secret stays unprovisioned while every other probe reports it healthy.
       secret_setup_token="devtoken"

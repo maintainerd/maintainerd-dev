@@ -130,8 +130,8 @@ services:
     build:
       context: ../maintainerd-auth
       dockerfile: Dockerfile.local
-    image: m9d-auth-dev
-    container_name: m9d-auth-dev
+    image: maintainerd-auth-dev
+    container_name: maintainerd-auth-dev
     profiles: ["auth", "auth-observed", "all", "all-observed"]
     # gRPC (mTLS) is exposed for host tooling such as grpcurl. HTTP APIs stay
     # behind nginx; only the gRPC port is published directly.
@@ -223,8 +223,8 @@ services:
     build:
       context: ../maintainerd-auth/web/console
       dockerfile: Dockerfile.local
-    image: m9d-console-dev
-    container_name: m9d-console-dev
+    image: maintainerd-console-dev
+    container_name: maintainerd-console-dev
     profiles: ["auth", "auth-observed", "all", "all-observed"]
     volumes:
       - ../maintainerd-auth/web/console:/app
@@ -243,8 +243,8 @@ services:
     build:
       context: ../maintainerd-auth/web/identity
       dockerfile: Dockerfile.local
-    image: m9d-identity-dev
-    container_name: m9d-identity-dev
+    image: maintainerd-identity-dev
+    container_name: maintainerd-identity-dev
     profiles: ["auth", "auth-observed", "all", "all-observed"]
     volumes:
       - ../maintainerd-auth/web/identity:/app
@@ -261,14 +261,14 @@ services:
   # ── Core console (maintainerd's main dashboard) ──────────────────────────────
   # The control-plane UI. Vite dev server (hot reload) reached through nginx at
   # https://console.maintainerd.local. Talks to the core REST API same-origin
-  # (nginx routes /api/ → m9d-core:8080). Runs with the core stack under the
+  # (nginx routes /api/ → maintainerd-core:8080). Runs with the core stack under the
   # all / all-observed profiles.
   maintainerd-core-console:
     build:
       context: ../maintainerd/web/console
       dockerfile: Dockerfile.local
-    image: m9d-core-console-dev
-    container_name: m9d-core-console-dev
+    image: maintainerd-core-console-dev
+    container_name: maintainerd-core-console-dev
     profiles: ["all", "all-observed"]
     volumes:
       - ../maintainerd/web/console:/app
@@ -279,7 +279,7 @@ services:
       - CHOKIDAR_USEPOLLING=true
       - CHOKIDAR_INTERVAL=300
     depends_on:
-      - m9d-core
+      - maintainerd-core
     init: true
     restart: unless-stopped
 
@@ -294,8 +294,8 @@ services:
       dockerfile: Dockerfile
       args:
         VERSION: local-release
-    image: m9d-auth-release
-    container_name: m9d-auth-release
+    image: maintainerd-auth-release
+    container_name: maintainerd-auth-release
     profiles: ["auth-release"]
     ports:
       # gRPC (mTLS) for host tooling such as grpcurl, matching the dev backend.
@@ -393,7 +393,7 @@ services:
   # Built from the parent context via build/Dockerfile (+ build/Dockerfile.dockerignore).
   # Core publishes 9080 (REST) / 9081 (gRPC) — 8080 is taken by SigNoz.
   # ===========================================================================
-  m9d-core-db:
+  maintainerd-core-db:
     image: postgres:16-alpine
     profiles: ["maintainerd", "all", "all-observed"]
     environment:
@@ -410,7 +410,7 @@ services:
   # Secret's own Postgres. It is a real vault now (tenant → project →
   # environment → folder → secret → immutable versions), so it needs a database
   # of its own rather than sharing core's.
-  m9d-secret-db:
+  maintainerd-secret-db:
     image: postgres:16-alpine
     profiles: ["maintainerd", "all", "all-observed"]
     environment:
@@ -424,7 +424,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  m9d-secret:
+  maintainerd-secret:
     build:
       context: ..
       dockerfile: maintainerd-dev/build/Dockerfile
@@ -433,11 +433,11 @@ services:
         CMD_PATH: cmd/secretd
     profiles: ["maintainerd", "all", "all-observed"]
     depends_on:
-      m9d-secret-db:
+      maintainerd-secret-db:
         condition: service_healthy
     environment:
       APP_ENV: development
-      DB_HOST: m9d-secret-db
+      DB_HOST: maintainerd-secret-db
       DB_PORT: "5432"
       DB_USER: secret
       DB_PASSWORD: secretpass
@@ -474,14 +474,14 @@ services:
   # Secret is adoptable alone — an org can run just it plus Auth — so it ships a
   # console of its own rather than a page inside core's. Vite dev server (hot
   # reload) reached through nginx at https://console.secret.maintainerd.local,
-  # which also routes /api/ → m9d-secret:8092 so the SPA talks to the API
+  # which also routes /api/ → maintainerd-secret:8092 so the SPA talks to the API
   # same-origin.
-  m9d-secret-console:
+  maintainerd-secret-console:
     build:
       context: ../maintainerd-secret/web/console
       dockerfile: Dockerfile.local
-    image: m9d-secret-console-dev
-    container_name: m9d-secret-console
+    image: maintainerd-secret-console-dev
+    container_name: maintainerd-secret-console
     profiles: ["maintainerd", "all", "all-observed"]
     volumes:
       - ../maintainerd-secret/web/console:/app
@@ -492,15 +492,15 @@ services:
       - CHOKIDAR_USEPOLLING=true
       - CHOKIDAR_INTERVAL=300
     depends_on:
-      - m9d-secret
+      - maintainerd-secret
     init: true
     restart: unless-stopped
 
-  # NOTE: the former m9d-docker service is gone — the docker runtime driver is
+  # NOTE: the former maintainerd-docker service is gone — the docker runtime driver is
   # compiled INTO the agent (maintainerd-agent internal/runtime/docker), so the
   # agent mounts the host socket directly. See plan/14-target-architecture.md.
 
-  m9d-core:
+  maintainerd-core:
     build:
       context: ..
       dockerfile: maintainerd-dev/build/Dockerfile
@@ -511,7 +511,7 @@ services:
     # Dev-only: root so it can read the 0600 gRPC client key it presents to Auth.
     user: "0:0"
     depends_on:
-      m9d-core-db:
+      maintainerd-core-db:
         condition: service_healthy
       # service_started, NOT service_healthy, for auth and secret — deliberately.
       #
@@ -523,9 +523,9 @@ services:
       # Core converges instead of waiting: internal/dependency retries until each
       # is reachable, and /readyz stays not-ready until they settle. "Not
       # listening yet" is the normal early state, not an error.
-      m9d-auth:
+      maintainerd-auth:
         condition: service_started
-      m9d-secret:
+      maintainerd-secret:
         condition: service_started
     healthcheck:
       # /readyz, not /healthz: readiness is what carries the dependency state, so
@@ -537,7 +537,7 @@ services:
       start_period: 20s
     environment:
       APP_ENV: development
-      DB_HOST: m9d-core-db
+      DB_HOST: maintainerd-core-db
       DB_PORT: "5432"
       DB_USER: core
       DB_PASSWORD: corepass
@@ -570,7 +570,7 @@ services:
       SETUP_ADMIN_PASSWORD: ${MAINTAINERD_ADMIN_PASSWORD:-Pass123!}
       # Core's console + service-registry wiring.
       CORE_CONSOLE_DOMAIN: console.maintainerd.local
-      SECRET_ENDPOINT: "m9d-secret:9092"
+      SECRET_ENDPOINT: "maintainerd-secret:9092"
       # --- auth + secret as hard dependencies -----------------------------
       # Outside development a missing one of these is a boot error naming them
       # all at once. APP_ENV=development downgrades that to a warning, so the
@@ -586,13 +586,13 @@ services:
       # Core's outbound origin for secret's REST API. http is permitted only
       # because APP_ENV=development; the config refuses a non-https origin
       # anywhere else, since every request core sends here carries a credential.
-      SECRET_BASE_URL: "http://m9d-secret:8092"
+      SECRET_BASE_URL: "http://maintainerd-secret:8092"
       # --- core drives secret's gRPC SetupService --------------------------
       # The controlled-mode counterpart to AUTH_SETUP_ADDR above. Empty means
       # core does not drive secret's setup at all and an operator runs secret's
       # own REST wizard (standalone). The launcher sets the token under the
       # all / all-observed profiles, alongside auth's.
-      SECRET_SETUP_ADDR: "m9d-secret:9092"
+      SECRET_SETUP_ADDR: "maintainerd-secret:9092"
       SECRET_SETUP_BOOTSTRAP_TOKEN: ${MAINTAINERD_SECRET_SETUP_TOKEN:-}
     volumes:
       # gRPC mTLS material (same CA as Auth). Read-only. Generated by ./maintainerd setup.
@@ -602,7 +602,7 @@ services:
       - "9081:8081"
     restart: unless-stopped
 
-  m9d-agent:
+  maintainerd-agent:
     build:
       context: ..
       dockerfile: maintainerd-dev/build/Dockerfile
@@ -611,16 +611,16 @@ services:
         CMD_PATH: cmd/agentd
     profiles: ["maintainerd", "all", "all-observed"]
     depends_on:
-      - m9d-core
+      - maintainerd-core
     # Root + the host socket: the docker runtime driver is compiled into the
     # agent (dev convenience; production hosts scope this properly).
     user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - m9d-agent-state:/var/lib/maintainerd-agent
+      - maintainerd-agent-state:/var/lib/maintainerd-agent
     environment:
       APP_ENV: development
-      CORE_ADDR: "m9d-core:8081"
+      CORE_ADDR: "maintainerd-core:8081"
       AGENT_NAME: agent-1
       GRPC_PORT: "9091"
       HTTP_PORT: "8091"
@@ -635,7 +635,7 @@ volumes:
   console-node-modules:
   # The agent's static cache — system-tier desired state survives restarts so
   # the agent can supervise system services with core down.
-  m9d-agent-state:
+  maintainerd-agent-state:
   identity-node-modules:
   core-console-node-modules:
   secret-console-node-modules:

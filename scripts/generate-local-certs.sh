@@ -103,9 +103,15 @@ if [ ! -s "$TLS_KEY" ] || [ ! -s "$TLS_CERT" ] || \
   rm -f "$TLS_CSR"
 fi
 
+# The SAN check is as load-bearing as the expiry one. Container names were renamed
+# from the m9d-* prefix to maintainerd-*, so a cert generated before that rename
+# carries a SAN naming a host that no longer exists. Missing-file and expiry checks
+# both pass on such a cert, and the failure surfaces as a TLS handshake error that
+# looks like a CA problem rather than a stale SAN — so the name is asserted here.
 if [ ! -s "$GRPC_SERVER_KEY" ] || [ ! -s "$GRPC_SERVER_CERT" ] || \
    [ ! -s "$GRPC_CLIENT_CERT" ] || \
-   ! openssl x509 -checkend 2592000 -noout -in "$GRPC_SERVER_CERT" >/dev/null 2>&1; then
+   ! openssl x509 -checkend 2592000 -noout -in "$GRPC_SERVER_CERT" >/dev/null 2>&1 || \
+   ! openssl x509 -in "$GRPC_SERVER_CERT" -noout -text 2>/dev/null | grep -qF 'DNS:maintainerd-auth-dev'; then
   echo "  [CREATE] gRPC mTLS server + client certificates"
   mkdir -p "$GRPC_DIR"
   # 755, not 700: the all-in-one RELEASE image runs as a non-root user (uid
@@ -119,12 +125,12 @@ if [ ! -s "$GRPC_SERVER_KEY" ] || [ ! -s "$GRPC_SERVER_CERT" ] || \
 
   # Server cert — SANs cover every name a gRPC client might dial:
   #   localhost / 127.0.0.1        host tools (grpcurl) against the exposed port
-  #   maintainerd-auth, m9d-auth-dev   other containers on the compose network
+  #   maintainerd-auth, maintainerd-auth-dev   other containers on the compose network
   openssl req -new -newkey rsa:2048 -sha256 -nodes \
     -keyout "$GRPC_SERVER_KEY" \
     -out "$GRPC_SERVER_CSR" \
     -subj "/CN=maintainerd-auth-grpc" \
-    -addext "subjectAltName=DNS:localhost,DNS:maintainerd-auth,DNS:maintainerd-auth-release,DNS:m9d-auth-dev,IP:127.0.0.1" \
+    -addext "subjectAltName=DNS:localhost,DNS:maintainerd-auth,DNS:maintainerd-auth-release,DNS:maintainerd-auth-dev,IP:127.0.0.1" \
     -addext "extendedKeyUsage=serverAuth"
   openssl x509 -req -sha256 -days 825 \
     -in "$GRPC_SERVER_CSR" \
