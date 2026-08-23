@@ -334,8 +334,18 @@ cmd_up() {
   # Auth's REST setup wizard as the bootstrap path.
   local setup_enabled="false"
   local auth_setup_token=""
-  # Empty on the auth-only profiles: core is not running there, so nothing drives
-  # secret's setup and an empty SECRET_SETUP_BOOTSTRAP_TOKEN is the honest value.
+  # Secret's first-run owner. These three move as ONE decision and only the
+  # all / all-observed case below flips them, because only there is Auth running
+  # for core to provision secret's IAM records against:
+  #
+  #   standalone + empty addr + empty token  -> secret's own REST wizard bootstraps it
+  #   core       + addr       + token        -> core's gRPC SetupService does
+  #
+  # Splitting them opens both paths at once, which is the race whose winner owns
+  # the vault. Defaults are the standalone triple, so `--profile=maintainerd`
+  # (core without Auth, hence unable to provision anything) keeps the wizard.
+  local secret_mode="standalone"
+  local secret_setup_addr=""
   local secret_setup_token=""
   local auth_grpc_enabled=""
   local -a compose_args=()
@@ -385,9 +395,15 @@ cmd_up() {
       auth_grpc_enabled="true"
       # Core also drives SECRET's gRPC SetupService under these profiles, which is
       # the controlled-mode path: core registers secret's IAM records in Auth from
-      # its catalog, then tells secret itself. Must match maintainerd-secret's own
-      # SETUP_BOOTSTRAP_TOKEN in docker-compose.yml, or the setup call is refused
-      # and secret stays unprovisioned while every other probe reports it healthy.
+      # its catalog, then tells secret itself. The mode goes with it — secret shuts
+      # its REST wizard so the gRPC path is the only one open.
+      #
+      # The address is what core gates on (Enabled() == addr != ""), and the token
+      # must match maintainerd-secret's own SETUP_BOOTSTRAP_TOKEN in
+      # docker-compose.yml, or the setup call is refused and secret stays
+      # unprovisioned while every other probe reports it healthy.
+      secret_mode="core"
+      secret_setup_addr="maintainerd-secret:9092"
       secret_setup_token="devtoken"
       ;;
   esac
@@ -398,6 +414,8 @@ cmd_up() {
   MAINTAINERD_OTEL_ENABLED="$otel_enabled" \
   MAINTAINERD_SETUP_ENABLED="$setup_enabled" \
   MAINTAINERD_AUTH_SETUP_TOKEN="$auth_setup_token" \
+  MAINTAINERD_SECRET_MODE="$secret_mode" \
+  MAINTAINERD_SECRET_SETUP_ADDR="$secret_setup_addr" \
   MAINTAINERD_SECRET_SETUP_TOKEN="$secret_setup_token" \
   MAINTAINERD_AUTH_GRPC_ENABLED="$auth_grpc_enabled" \
     docker compose --profile "$profile" up "${compose_args[@]}" --remove-orphans
