@@ -278,6 +278,24 @@ services:
       # Polling is reliable for bind mounts and avoids host inotify exhaustion.
       - CHOKIDAR_USEPOLLING=true
       - CHOKIDAR_INTERVAL=300
+      # --- sign-in wiring -------------------------------------------------
+      # The VITE_* spellings, not the service's own AUTH_ISSUER/CORE_CONSOLE_*
+      # names. Both are read (runtime window.__ENV__ first, then build-time
+      # import.meta.env), and only the VITE_ prefix crosses from a container env
+      # var into the bundle. It also lets ISSUER_URL differ from the service's
+      # AUTH_ISSUER, which it must: the SPA appends /authorize and /end-session,
+      # and those are pages on the identity APP, while AUTH_ISSUER is the API
+      # origin that appears in the `iss` claim. Same authorization server, two
+      # different hostnames.
+      - VITE_OAUTH_ISSUER_URL=https://identity.auth.maintainerd.local
+      - VITE_OAUTH_TOKEN_URL=https://identity-api.auth.maintainerd.local/api/v1/oauth/token
+      - VITE_OAUTH_AUDIENCE=https://core.maintainerd.local
+      # EMPTY BY DEFAULT AND THAT IS THE HONEST VALUE. Auth generates this client
+      # id during setup, so it differs per install and cannot be committed here.
+      # Empty means the console reports "cannot obtain a token" instead of sending
+      # the browser to /authorize for a client that may not exist. Read the real id
+      # and export this before `up` — README §"Identity in the local stack".
+      - VITE_OAUTH_CLIENT_ID=${MAINTAINERD_CORE_CONSOLE_CLIENT_ID:-}
     depends_on:
       - maintainerd-core
     init: true
@@ -461,13 +479,42 @@ services:
       HTTP_PORT: "8092"
       # The bearer-token verifier. These three are all-or-nothing: a JWKS URL
       # without an issuer and audience check accepts any token Auth ever signed,
-      # so the service refuses a partial set at boot. Left EMPTY by default, which
-      # (with APP_ENV=development) puts the guard in development-open mode and
-      # lets the console talk to the API before Auth has a client for it. Set all
-      # three to exercise real enforcement.
-      AUTH_JWKS_URL: ${MAINTAINERD_SECRET_AUTH_JWKS_URL:-}
-      AUTH_ISSUER: ${MAINTAINERD_SECRET_AUTH_ISSUER:-}
-      AUTH_AUDIENCE: ${MAINTAINERD_SECRET_AUTH_AUDIENCE:-}
+      # so the service refuses a partial set at boot.
+      #
+      # SET, NOT EMPTY. Leaving them empty is what put this service in
+      # development-open mode — no bearer token required and every caller treated
+      # as a blanket administrator, on a vault. `GET /api/v1/projects` answered 200
+      # to an anonymous curl. The dev stack runs Auth, so there is no reason for
+      # the guard to be open here.
+      #
+      # THE JWKS URL IS INTERNAL, THE OTHER TWO ARE PUBLIC — see the identical
+      # comment on maintainerd-core below for why the two forms differ.
+      #
+      # Plaintext http on the JWKS hop is DEVELOPMENT ONLY: nginx is this stack's
+      # TLS edge and this container carries no copy of the local CA, so the
+      # in-network hop to Auth is unencrypted. Production must point this at the
+      # https public JWKS URL (or terminate inside a mesh that provides mTLS).
+      AUTH_JWKS_URL: "http://maintainerd-auth:8081/.well-known/jwks.json"
+      AUTH_ISSUER: "https://identity-api.auth.maintainerd.local"
+      # The `apis.identifier` Core registered for secret from its steward catalog
+      # (SECRET_API_AUDIENCE). It is an identifier, not a URL — nothing fetches it.
+      AUTH_AUDIENCE: "https://secret.maintainerd.local"
+      # This service's OWN m2m client, for tokens it needs to call other services.
+      # PRESENCE-CHECKED ONLY, and deliberately placeholders: nothing in this
+      # service presents them today (there is no outbound token code yet), and the
+      # real credential cannot be supplied here anyway — Core's steward mints
+      # secret's keypair as private_key_jwt and writes the private key to its OWN
+      # STEWARD_KEY_DIR, with no handoff to this container. Replace with the real
+      # client id + SECRET_CLIENT_PRIVATE_KEY_FILE once that handoff exists.
+      SECRET_CLIENT_ID: "dev-placeholder-secret-client"
+      SECRET_CLIENT_SECRET: "dev-placeholder-not-a-real-credential"
+      # The console's PUBLIC SPA client id. Also presence-checked only — the
+      # service never uses it; the console reads its own copy (see the console
+      # service below). No such client exists in Auth yet, so the value here is a
+      # placeholder that keeps the boot check honest about what is missing rather
+      # than a client id the browser would be sent to. See README §"Identity in
+      # the local stack".
+      SECRET_CONSOLE_CLIENT_ID: "dev-placeholder-secret-console-client"
     restart: unless-stopped
 
   # ── Secret console (maintainerd-secret's own dashboard) ─────────────────────
@@ -491,6 +538,17 @@ services:
       # Polling is reliable for bind mounts and avoids host inotify exhaustion.
       - CHOKIDAR_USEPOLLING=true
       - CHOKIDAR_INTERVAL=300
+      # --- sign-in wiring -------------------------------------------------
+      # Same scheme and same issuer-vs-API-origin split as the core console above.
+      - VITE_OAUTH_ISSUER_URL=https://identity.auth.maintainerd.local
+      - VITE_OAUTH_TOKEN_URL=https://identity-api.auth.maintainerd.local/api/v1/oauth/token
+      - VITE_OAUTH_AUDIENCE=https://secret.maintainerd.local
+      # Empty because no SPA client for THIS console exists in Auth at all — Core's
+      # setup registers one console client (its own) and the steward catalog has no
+      # console-client kind. Until an operator creates it, empty is the only value
+      # that is not a lie; the console shows its blocked banner and secret's API
+      # answers 401. README §"Identity in the local stack" has the steps.
+      - VITE_OAUTH_CLIENT_ID=${MAINTAINERD_SECRET_CONSOLE_CLIENT_ID:-}
     depends_on:
       - maintainerd-secret
     init: true
@@ -523,14 +581,34 @@ services:
       # Core converges instead of waiting: internal/dependency retries until each
       # is reachable, and /readyz stays not-ready until they settle. "Not
       # listening yet" is the normal early state, not an error.
+      #
+      # required: false because auth is NOT in the `maintainerd` profile. Without
+      # it, `--profile=maintainerd` failed to load at all — "depends on undefined
+      # service maintainerd-auth" — since Compose resolves depends_on against the
+      # services the selected profile actually activates. With it, the ordering
+      # applies wherever auth is present and is skipped where it is not, which is
+      # the same thing core's reconcile loop already tolerates at runtime.
+      #
+      # Note what the auth-free profile then means: core comes up with no reachable
+      # auth, so in development its guard opens. That is the documented trade of
+      # `--profile=maintainerd` (core stack only), not an accident.
       maintainerd-auth:
         condition: service_started
+        required: false
       maintainerd-secret:
         condition: service_started
+        required: false
     healthcheck:
       # /readyz, not /healthz: readiness is what carries the dependency state, so
       # `docker compose ps` reports honestly while core is still converging.
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      #
+      # The binary's own `readyz` subcommand, NOT wget: build/Dockerfile ships this
+      # service from distroless/static, which has no wget, curl or shell. The old
+      # wget probe never once succeeded — it failed with "executable not found",
+      # which docker reports identically to a failing dependency, so core showed
+      # (unhealthy) whatever its real state was. cmd/server/main.go exists for
+      # exactly this and probes its own /readyz over loopback.
+      test: ["CMD", "/app", "readyz"]
       interval: 10s
       timeout: 3s
       retries: 12
@@ -553,6 +631,14 @@ services:
       # all / all-observed profiles (the launcher sets MAINTAINERD_SETUP_ENABLED),
       # where Auth is also running.
       SETUP_ENABLED: ${MAINTAINERD_SETUP_ENABLED:-false}
+      # The setup surface is the one route that bypasses the bearer guard — it has
+      # to, since it is what provisions the instance that would mint the token. It
+      # carries its own gate instead, and with this unset the gate is OFF: an
+      # anonymous `POST /api/v1/setup` answered 200. Enforcing the bearer guard
+      # does nothing for this route, so it needs its own value. Matches the
+      # devtoken convention used for the gRPC bootstrap tokens above.
+      # Callers send it as the X-Setup-Token header; a core:admin bearer also works.
+      CORE_SETUP_TOKEN: devtoken
       AUTH_SETUP_ADDR: "maintainerd-auth:50051"
       AUTH_SETUP_BOOTSTRAP_TOKEN: ${MAINTAINERD_AUTH_SETUP_TOKEN:-}
       # Auth's gRPC serves TLS with the local CA; present the client cert too so
@@ -579,10 +665,41 @@ services:
       #
       # Set here so the dev stack exercises the REAL path rather than the
       # development relaxation.
-      AUTH_JWKS_URL: "https://maintainerd-auth:8443/.well-known/jwks.json"
-      AUTH_ISSUER: "https://auth.maintainerd.local"
-      AUTH_AUDIENCE: "maintainerd-core"
-      AUTH_TOKEN_URL: "https://maintainerd-auth:8443/oauth/token"
+      #
+      # TWO FORMS ON PURPOSE — internal for what core DIALS, public for what core
+      # COMPARES. It reads as an inconsistency and is not:
+      #
+      #   AUTH_JWKS_URL is FETCHED by this process (verifier + the /readyz probe),
+      #   so it has to be an address that resolves inside the compose network.
+      #   Auth serves plain HTTP on :8081 — nginx is the TLS edge, Auth itself has
+      #   no TLS listener and never had one on :8443 — and JWKS is on :8081 only
+      #   (:8080 and :8082 answer 404).
+      #
+      #   AUTH_ISSUER and AUTH_AUDIENCE are STRING-COMPARED against the `iss` and
+      #   `aud` claims. They are never dialled, so they must be the exact public
+      #   strings Auth stamps. The issuer is Auth's APP_PUBLIC_HOSTNAME; the
+      #   audience is the `apis.identifier` core registered for itself
+      #   (CORE_API_AUDIENCE), which is a URL-shaped identifier, not an endpoint.
+      #
+      # Plaintext http on the JWKS hop is DEVELOPMENT ONLY, for the same reason as
+      # secret above: no local CA in this image, nginx holds the TLS edge.
+      # Production must use the https public JWKS URL or an mTLS mesh.
+      AUTH_JWKS_URL: "http://maintainerd-auth:8081/.well-known/jwks.json"
+      AUTH_ISSUER: "https://identity-api.auth.maintainerd.local"
+      AUTH_AUDIENCE: "https://core.maintainerd.local"
+      # BOTH dialled AND compared, which is why it is the public form even though
+      # it is a URL: core POSTs here, and it also signs this exact string as the
+      # `aud` of its private_key_jwt client assertion. Auth accepts an assertion
+      # audience only from its own APP_PUBLIC_HOSTNAME set, so an internal address
+      # would connect and then have every mint refused. Resolves on the compose
+      # network via the nginx alias.
+      AUTH_TOKEN_URL: "https://identity-api.auth.maintainerd.local/api/v1/oauth/token"
+      # Which makes the local CA a requirement: that hop is https through nginx,
+      # and this distroless image's trust store has no local CA. Narrowing trust
+      # to only this CA is safe here because every outbound origin in this stack is
+      # local; a deployment that also calls the public internet must instead ADD
+      # the CA to the system bundle.
+      SSL_CERT_FILE: /etc/maintainerd/ca/maintainerd-local-ca.crt
       # Core's outbound origin for secret's REST API. http is permitted only
       # because APP_ENV=development; the config refuses a non-https origin
       # anywhere else, since every request core sends here carries a credential.
@@ -597,6 +714,8 @@ services:
     volumes:
       # gRPC mTLS material (same CA as Auth). Read-only. Generated by ./maintainerd setup.
       - ./.certs/grpc:/etc/maintainerd/grpc-certs:ro
+      # The local CA, for the https hop to Auth's token endpoint (SSL_CERT_FILE).
+      - ./.certs:/etc/maintainerd/ca:ro
     ports:
       - "9080:8080"
       - "9081:8081"

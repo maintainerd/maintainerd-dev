@@ -64,8 +64,9 @@ https://console.maintainerd.local
 ```
 
 It talks to the core REST API same-origin (nginx routes `/api/` → `maintainerd-core:8080`).
-The console has **no login yet** — it boots straight to the dashboard, because the
-core control plane currently requires no auth. Pick the active tenant with the
+The core API **enforces authorization** (see "Identity in the local stack"), and the
+console cannot yet obtain a token, so it renders its blocked banner and every API
+call answers 401. Pick the active tenant with the
 top-bar switcher; projects/services/providers/agents are scoped to it, and
 resources live under a project. Run `./maintainerd setup` once so `/etc/hosts` and
 the local TLS cert (now covering `*.maintainerd.local`) include the console host.
@@ -80,11 +81,11 @@ through nginx at:
 https://console.secret.maintainerd.local
 ```
 
-`/api/` is proxied same-origin to `maintainerd-secret:8092`. In dev, Secret boots
-**guard-open** with a loud banner — no `AUTH_*` or client credentials are set —
-so its permission checks are not enforced locally and the console needs no
-sign-in. Enforcing them locally means giving Secret a real Auth issuer/audience
-and creating its two clients; the runbook for that is in Secret's own docs.
+`/api/` is proxied same-origin to `maintainerd-secret:8092`. Secret boots
+**`authorization: ENFORCED`** — the verifier trio is set in compose — so its
+permission checks apply locally and an anonymous call to `/api/v1/projects` is a
+401. No SPA client exists for this console in Auth yet, so it cannot sign in;
+`GET /api/v1/capabilities` reports the posture. See "Identity in the local stack".
 
 ## Startup order (auth + secret are hard dependencies of core)
 
@@ -177,6 +178,107 @@ modules pin.
 | `SETUP_BOOTSTRAP_TOKEN` | secret | gates the one-time `Setup` (controller registration) |
 | `CORE_ADDR` | agent | Core AgentGateway (`maintainerd-core:8081`) |
 | `GRPC_PORT` / `HTTP_PORT` | each | per-service listen ports |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | core, secret | the inbound bearer-token verifier — see below |
+| `AUTH_TOKEN_URL` | core | where core mints its own outbound tokens |
+| `CORE_SETUP_TOKEN` | core | gates `POST /api/v1/setup`, which bypasses the bearer guard |
+
+## Identity in the local stack
+
+**Both APIs enforce authorization here. An unauthenticated request is refused.**
+That is deliberate: `APP_ENV=development` lets these services fall back to a
+guard-open mode where every caller is treated as a blanket administrator, and for
+a control plane and a secret vault that is not a mode worth having on a laptop.
+
+### The verifier trio
+
+Core and Secret each verify inbound bearer tokens from three values. They are
+all-or-nothing — a JWKS URL with no issuer/audience check accepts any token Auth
+ever signed, so both services refuse a partial set at boot.
+
+| Var | Form | Why |
+|-----|------|-----|
+| `AUTH_JWKS_URL` | `http://maintainerd-auth:8081/.well-known/jwks.json` — **internal** | The service *fetches* it, so it must resolve on the compose network. JWKS is on `:8081` only; `:8080`/`:8082` answer 404. Auth has **no TLS listener** — nginx is the TLS edge — so this hop is plain HTTP. **Development only**; production points this at the https public URL or terminates inside a mesh that provides mTLS. |
+| `AUTH_ISSUER` | `https://identity-api.auth.maintainerd.local` — **public** | *String-compared* against the `iss` claim, never dialled. Must be byte-identical to what Auth stamps, i.e. Auth's `APP_PUBLIC_HOSTNAME`. |
+| `AUTH_AUDIENCE` | `https://core.maintainerd.local` / `https://secret.maintainerd.local` — **public** | *String-compared* against `aud`. It is the `apis.identifier` registered in Auth for that service, not an endpoint — nothing fetches it. |
+
+The internal/public split is the part that reads like a mistake and is not: one is
+an address, two are claim values.
+
+`AUTH_TOKEN_URL` (core only) is both — core POSTs to it *and* signs that exact
+string as the `aud` of its `private_key_jwt` client assertion, and Auth accepts an
+assertion audience only from its own `APP_PUBLIC_HOSTNAME` set. So it is the public
+form, and core mounts `.certs/` with `SSL_CERT_FILE` to trust the local CA on that
+https hop.
+
+### Confirming the guard is on
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9080/api/v1/tenants
+# 401 = enforced.  200 = the guard is OPEN — stop and fix the trio.
+
+curl -sk https://console-api.secret.maintainerd.local/api/v1/capabilities
+# "guard_mode":"enforced"
+
+curl -s http://localhost:9080/readyz     # {"status":"ready"} — includes the auth dependency
+```
+
+Boot logs must contain **neither** `AUTHORIZATION IS DISABLED` /
+`API is UNAUTHENTICATED` nor `Failed to refresh HTTP JWK Set`. Note the asymmetry:
+a wrong `AUTH_JWKS_URL` still logs `ENFORCED` and boots — the JWKS fetch is lazy
+with a 1h retry — and then 401s every call. The refresh error is the only signal.
+
+### If sign-in fails
+
+Neither console can sign in yet, and the blocker is in Auth's code, not in this
+compose file. `internal/oauth/service_authorize.go` → `isSeededSurfaceClient`
+allows a **system** client to drive a public authorize request only when its name
+is `auth-console` or `auth-identity`. Core's setup registers its console as
+`maintainerd-console` with `is_system = true`, so `/api/v1/oauth/authorize`
+answers `400 invalid_request "unknown or inactive client context"` for it — and
+would for any other console added the same way.
+
+Two further gaps sit behind that one:
+
+- **No audience grant.** `client_apis` is empty, so no client may request
+  `audience=https://core.maintainerd.local`. Without the parameter Auth mints
+  `aud = <the client's own client_id>`, which the service then rejects. Granting it
+  is `POST /api/v1/clients/{uuid}/apis` on Auth's console API, which requires
+  `client:api:create` **plus step-up (ACR 2)** — an MFA'd session, so it is a
+  console-UI step, not a scriptable one.
+- **No SPA client for Secret's console at all.** Core's setup registers exactly one
+  console client (its own), and the steward catalog
+  (`maintainerd/internal/steward/builtin.go`) has no console-client kind — only
+  Service, ResourceAPI, ServiceClient (m2m `private_key_jwt`) and ServicePolicy.
+
+So the consoles are wired but parked, and the compose defaults say so honestly:
+`VITE_OAUTH_CLIENT_ID` is **empty**, which makes each console render its
+"cannot obtain a token" banner instead of bouncing the browser to `/authorize` for
+a client that will be refused. Do not paper over this by clearing the trio — that
+reopens the guard on a vault to make a UI look better.
+
+Once a usable client exists, point a console at it without a rebuild:
+
+```bash
+export MAINTAINERD_CORE_CONSOLE_CLIENT_ID=<client_id from Auth>
+export MAINTAINERD_SECRET_CONSOLE_CLIENT_ID=<client_id from Auth>
+./maintainerd up --profile=all -d
+```
+
+Read the ids you already have with:
+
+```bash
+docker exec postgres-db psql -U devuser -d maintainerd \
+  -c "select name, identifier, client_type, is_system from clients order by client_id;"
+```
+
+`identifier` is the `client_id` — a public value, not a credential.
+
+The console's `VITE_OAUTH_ISSUER_URL` is `https://identity.auth.maintainerd.local`,
+which is **not** the service's `AUTH_ISSUER`. The SPA appends `/authorize` and
+`/end-session`, and those are pages on the identity **app**; `AUTH_ISSUER` is the
+API origin that appears in the `iss` claim. Same authorization server, two
+hostnames. (`web/console/src/services/api/config.ts` claims the two are the same
+value; in this stack they are not.)
 
 ## Known limitations (dev stack)
 
@@ -185,11 +287,21 @@ modules pin.
   but nothing yet drives Secret's own gRPC `SetupService`, and `core` mode closes
   its REST setup wizard — so flipping it now would leave no bootstrap path.
   Override with `MAINTAINERD_SECRET_MODE=core` once that lands.
-- **Secret's guards are dev-open** — no `AUTH_*` or client credentials are set,
-  so it boots with the loud guard-open banner and its permission checks are not
-  enforced locally. `SECRET_ROOT_KEY` is a fixed dev value.
-- **No TLS/auth between services** — plaintext gRPC on the compose network; mTLS
-  and system-Auth enforcement are not wired yet.
+- **Neither console can sign in** — both APIs enforce, but Auth refuses a public
+  authorize request from any system client other than its own two seeded SPAs, and
+  no audience grant exists. See "If sign-in fails" above. Work against the APIs
+  with a token you mint yourself until that lands.
+- **Secret's own client credentials are placeholders** — `SECRET_CLIENT_ID` /
+  `SECRET_CLIENT_SECRET` satisfy a presence check and nothing more: secret has no
+  outbound token code yet, and the real credential cannot be supplied anyway
+  because Core's steward mints secret's keypair as `private_key_jwt` and writes the
+  private key to its own `STEWARD_KEY_DIR` with no handoff to secret's container.
+  `SECRET_ROOT_KEY` is a fixed dev value.
+- **JWKS is fetched over plain HTTP on the compose network** — Auth serves no TLS
+  (nginx is the edge) and core/secret ship from distroless without the local CA.
+  Development only; see "Identity in the local stack".
+- **No mTLS between services on the REST path** — plaintext gRPC on the compose
+  network apart from the setup/control channels, which do use the local CA.
 - **`maintainerd-agent` runs as root** to read the mounted host socket (dev convenience) — the docker runtime driver is compiled into the agent.
 - **Auth co-runs but isn't wired to Core yet** — the `all`/`all-observed` profiles
   start Auth alongside the core stack, but Core does not yet provision or govern it.
