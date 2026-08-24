@@ -636,14 +636,28 @@ services:
       # all / all-observed profiles (the launcher sets MAINTAINERD_SETUP_ENABLED),
       # where Auth is also running.
       SETUP_ENABLED: ${MAINTAINERD_SETUP_ENABLED:-false}
-      # The setup surface is the one route that bypasses the bearer guard — it has
-      # to, since it is what provisions the instance that would mint the token. It
-      # carries its own gate instead, and with this unset the gate is OFF: an
-      # anonymous `POST /api/v1/setup` answered 200. Enforcing the bearer guard
-      # does nothing for this route, so it needs its own value. Matches the
-      # devtoken convention used for the gRPC bootstrap tokens above.
-      # Callers send it as the X-Setup-Token header; a core:admin bearer also works.
-      CORE_SETUP_TOKEN: devtoken
+      # CORE_SETUP_TOKEN IS DELIBERATELY UNSET HERE.
+      #
+      # Core is the STARTING POINT of an install: when it first boots, nothing
+      # exists — no auth, no tenant, no admin, and nowhere a credential could have
+      # come from. The setup wizard is the front door, and demanding a token to
+      # open it means the operator must go find a value before they can do the
+      # very first thing. That is not a gate, it is a locked front door with the
+      # key inside.
+      #
+      # Core's own gate already handles this correctly: an empty token in
+      # development leaves the surface open and logs a loud warning that says
+      # "development only" (internal/setup/handler.go). Outside development an
+      # empty token DISABLES the trigger instead — fail closed — so an
+      # internet-reachable core never exposes an anonymous tenant/admin creator.
+      #
+      # This was briefly set to `devtoken` after reading that warning as a hole to
+      # close. It is not a hole in development; it is the affordance the warning
+      # announces. Setting it broke first-run with a 401 on the one endpoint that
+      # must answer before anything else works.
+      #
+      # An operator who wants the gate closed locally sets it and pastes the value
+      # into the wizard's optional token field.
       AUTH_SETUP_ADDR: "maintainerd-auth:50051"
       AUTH_SETUP_BOOTSTRAP_TOKEN: ${MAINTAINERD_AUTH_SETUP_TOKEN:-}
       # Auth's gRPC serves TLS with the local CA; present the client cert too so
